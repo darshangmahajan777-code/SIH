@@ -111,8 +111,13 @@ export function generateDaySlots({
  * Compute real-time daily availability for a doctor on a specific date,
  * checking leaves, holidays, day schedule, and existing appointments.
  */
-export const getDoctorAvailability = async (doctorId, dateStr) => {
-  const doctor = await DoctorProfile.findById(doctorId).lean();
+export const getDoctorAvailability = async (
+  doctorId,
+  dateStr,
+  preloadedDoctor = null,
+  preloadedAppointments = null
+) => {
+  const doctor = preloadedDoctor || (await DoctorProfile.findById(doctorId).lean());
   if (!doctor) {
     throw new AppError('Doctor not found', 404);
   }
@@ -173,11 +178,17 @@ export const getDoctorAvailability = async (doctorId, dateStr) => {
   });
 
   // 5. Query active booked appointments from database (Real-Time Slot Validity)
-  const activeAppointments = await Appointment.find({
-    doctorId: doctor._id,
-    date: dateStr,
-    status: { $ne: 'cancelled' },
-  }).select('slotTime status').lean();
+  // Uses preloaded appointments if provided in batch mode to eliminate N+1 round trips
+  const activeAppointments =
+    preloadedAppointments !== null
+      ? preloadedAppointments
+      : await Appointment.find({
+          doctorId: doctor._id,
+          date: dateStr,
+          status: { $ne: 'cancelled' },
+        })
+          .select('slotTime status')
+          .lean();
 
   const bookedSlotTimes = new Set(activeAppointments.map((a) => a.slotTime));
 
@@ -217,7 +228,8 @@ export const getDoctorAvailability = async (doctorId, dateStr) => {
 };
 
 /**
- * Daily Listing: get all doctors and their availability on a given date
+ * Daily Listing: get all doctors and their availability on a given date.
+ * Optimized with batch appointment retrieval to eliminate N+1 query overhead.
  */
 export const getDailyListing = async ({ dateStr, specialty, maxFee }) => {
   const query = { isActive: true };
@@ -229,12 +241,34 @@ export const getDailyListing = async ({ dateStr, specialty, maxFee }) => {
   }
 
   const doctors = await DoctorProfile.find(query).lean();
+  if (!doctors.length) return [];
 
-  // Compute live availability for each doctor on that date
+  // Batch query all appointments for candidate doctors on dateStr (Eliminates N+1 query pattern)
+  const doctorIds = doctors.map((d) => d._id);
+  const appointments = await Appointment.find({
+    doctorId: { $in: doctorIds },
+    date: dateStr,
+    status: { $ne: 'cancelled' },
+  })
+    .select('doctorId slotTime status')
+    .lean();
+
+  // Group appointments by doctor ID in a Map for O(1) lookup
+  const appointmentsByDoctor = new Map();
+  for (const apt of appointments) {
+    const docIdStr = apt.doctorId?.toString();
+    if (!appointmentsByDoctor.has(docIdStr)) {
+      appointmentsByDoctor.set(docIdStr, []);
+    }
+    appointmentsByDoctor.get(docIdStr).push(apt);
+  }
+
+  // Compute live availability for each doctor on that date using preloaded models
   const listing = await Promise.all(
     doctors.map(async (doc) => {
       try {
-        const avail = await getDoctorAvailability(doc._id, dateStr);
+        const docAppts = appointmentsByDoctor.get(doc._id.toString()) || [];
+        const avail = await getDoctorAvailability(doc._id, dateStr, doc, docAppts);
         return {
           id: doc._id,
           name: doc.doctorName,
@@ -277,6 +311,7 @@ export const bookAppointmentSlot = async ({
   mode = 'in-person',
   priority = 'routine',
   chiefComplaint = '',
+  hospitalId = null,
 }) => {
   if (!doctorId || !patientId || !date || !slotTime) {
     throw new AppError('Doctor, patient, date, and slot time are required', 400);
@@ -331,11 +366,23 @@ export const bookAppointmentSlot = async ({
     }
   }
 
-  // 3. Create appointment; database unique index catches any concurrent race condition
+  // 3. Resolve hospital context (from parameter or doctor profile)
+  let effectiveHospitalId = hospitalId;
+  if (!effectiveHospitalId) {
+    try {
+      const doc = await DoctorProfile.findById(doctorId).select('hospitalId').lean();
+      effectiveHospitalId = doc?.hospitalId || null;
+    } catch {
+      // fallback
+    }
+  }
+
+  // 4. Create appointment; database unique index catches any concurrent race condition
   try {
     const appointment = await Appointment.create({
       doctorId,
       patientId,
+      hospitalId: effectiveHospitalId,
       date,
       slotTime,
       mode,
@@ -344,6 +391,24 @@ export const bookAppointmentSlot = async ({
       tokenId,
       chiefComplaint,
     });
+
+    // Fire-and-forget notification
+    import('./notificationService.js')
+      .then(({ createNotification }) => {
+        createNotification({
+          recipient: appointment.patientId,
+          type: 'appointment_confirmed',
+          title: 'Appointment Confirmed',
+          message: `Your appointment is confirmed for ${appointment.date} at ${appointment.slotTime}.`,
+          metadata: {
+            appointmentId: appointment._id,
+            doctorId: appointment.doctorId,
+            date: appointment.date,
+            slotTime: appointment.slotTime,
+          },
+        }).catch(() => {});
+      })
+      .catch(() => {});
 
     return appointment;
   } catch (dbErr) {
@@ -358,6 +423,14 @@ export const bookAppointmentSlot = async ({
  * Cancel an appointment — immediately frees the slot and cancels linked Token
  */
 export const cancelAppointment = async ({ appointmentId, userId, reason = 'Cancelled by patient' }) => {
+  if (!userId) {
+    throw new AppError('Authentication required: userId must be provided to cancel an appointment', 401);
+  }
+
+  if (!appointmentId) {
+    throw new AppError('appointmentId is required', 400);
+  }
+
   const appointment = await Appointment.findById(appointmentId);
   if (!appointment) {
     throw new AppError('Appointment not found', 404);
@@ -372,10 +445,15 @@ export const cancelAppointment = async ({ appointmentId, userId, reason = 'Cance
   }
 
   // Authorize: patient or doctor
-  if (userId && appointment.patientId.toString() !== userId.toString()) {
-    // Check if user is the doctor
+  const isPatient = appointment.patientId.toString() === userId.toString();
+  if (!isPatient) {
+    // Check if user is the assigned doctor
     const doctor = await DoctorProfile.findById(appointment.doctorId);
-    if (!doctor || doctor.userId?.toString() !== userId.toString()) {
+    const isDoctor =
+      appointment.doctorId?.toString() === userId.toString() ||
+      (doctor && doctor.userId?.toString() === userId.toString());
+
+    if (!isDoctor) {
       throw new AppError('Not authorized to cancel this appointment', 403);
     }
   }
@@ -383,6 +461,23 @@ export const cancelAppointment = async ({ appointmentId, userId, reason = 'Cance
   appointment.status = 'cancelled';
   appointment.cancellationReason = reason;
   await appointment.save();
+
+  // Fire-and-forget notification
+  import('./notificationService.js')
+    .then(({ createNotification }) => {
+      createNotification({
+        recipient: appointment.patientId,
+        type: 'appointment_cancelled',
+        title: 'Appointment Cancelled',
+        message: `Your appointment on ${appointment.date} at ${appointment.slotTime} has been cancelled. Reason: ${reason}`,
+        metadata: {
+          appointmentId: appointment._id,
+          doctorId: appointment.doctorId,
+          reason,
+        },
+      }).catch(() => {});
+    })
+    .catch(() => {});
 
   // If appointment had an active token, cancel via authoritative queueService
   if (appointment.tokenId) {
@@ -457,17 +552,50 @@ export const updateAppointmentStatus = async (appointmentId, newStatus) => {
     return await checkInAppointment(appointmentId);
   }
 
-  if (newStatus === 'cancelled') {
-    return await cancelAppointment({ appointmentId });
-  }
-
   const appointment = await Appointment.findById(appointmentId);
   if (!appointment) {
     throw new AppError('Appointment not found', 404);
   }
 
+  if (newStatus === 'cancelled') {
+    return await cancelAppointment({
+      appointmentId,
+      userId: appointment.doctorId?.toString() || appointment.patientId?.toString(),
+    });
+  }
+
   appointment.status = newStatus;
   await appointment.save();
+
+  // Synchronize linked token if present
+  if (appointment.tokenId) {
+    try {
+      if (newStatus === 'in-progress') {
+        await Token.findByIdAndUpdate(appointment.tokenId, {
+          status: 'in-progress',
+          calledAt: new Date(),
+        });
+        const { emitQueueUpdate } = await import('./queueService.js');
+        await emitQueueUpdate();
+      } else if (newStatus === 'completed') {
+        const token = await Token.findById(appointment.tokenId);
+        if (token && token.status !== 'done') {
+          const { completeToken } = await import('./queueService.js');
+          await completeToken(token.tokenNumber);
+        }
+      }
+    } catch (err) {
+      console.warn('Sync appointment token status error:', err.message);
+    }
+  }
+
+  // ── Medical History: auto-create doctor-verified entry on completion ──────
+  // Fire-and-forget — never blocks the appointment completion path.
+  if (newStatus === 'completed') {
+    import('./historyService.js')
+      .then(({ createDoctorVerifiedEntry }) => createDoctorVerifiedEntry({ appointmentId }))
+      .catch((err) => console.warn('[scheduleService] History entry creation skipped:', err.message));
+  }
 
   return appointment;
 };
@@ -476,6 +604,14 @@ export const updateAppointmentStatus = async (appointmentId, newStatus) => {
  * Reschedule an appointment — atomically frees the old slot and books the new slot
  */
 export const rescheduleAppointment = async ({ appointmentId, newDate, newSlotTime, userId }) => {
+  if (!userId) {
+    throw new AppError('Authentication required: userId must be provided to reschedule an appointment', 401);
+  }
+
+  if (!appointmentId) {
+    throw new AppError('appointmentId is required', 400);
+  }
+
   const appointment = await Appointment.findById(appointmentId);
   if (!appointment) {
     throw new AppError('Appointment not found', 404);
@@ -489,7 +625,7 @@ export const rescheduleAppointment = async ({ appointmentId, newDate, newSlotTim
     throw new AppError('Cannot reschedule a completed appointment', 400);
   }
 
-  if (userId && appointment.patientId.toString() !== userId.toString()) {
+  if (appointment.patientId.toString() !== userId.toString()) {
     throw new AppError('Not authorized to reschedule this appointment', 403);
   }
 

@@ -65,6 +65,18 @@ const doctorProfileSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    hospitalId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Hospital',
+      default: null,
+      index: true,
+    },
+    verificationStatus: {
+      type: String,
+      enum: ['pending', 'verified', 'rejected'],
+      default: 'verified',
+      index: true,
+    },
     location: {
       lat: { type: Number, default: 28.6139 },
       lng: { type: Number, default: 77.2090 },
@@ -135,7 +147,11 @@ const doctorProfileSchema = new mongoose.Schema(
   }
 );
 
+doctorProfileSchema.index({ userId: 1 });
 doctorProfileSchema.index({ specialty: 1, avgRating: -1 });
+doctorProfileSchema.index({ isActive: 1, specialty: 1, avgRating: -1 });
+doctorProfileSchema.index({ hospitalId: 1, verificationStatus: 1, avgRating: -1 });
+doctorProfileSchema.index({ doctorName: 'text', specialty: 'text', hospitalName: 'text' });
 
 const DoctorProfile = mongoose.models.DoctorProfile || mongoose.model('DoctorProfile', doctorProfileSchema);
 export default DoctorProfile;

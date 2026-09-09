@@ -71,4 +71,122 @@ router.get('/session', asyncHandler(async (req, res) => {
   res.json({ success: true, data: session || null });
 }));
 
+// ============================================================================
+// DOCTOR CLINICAL WORKSPACE ENDPOINTS
+// ============================================================================
+
+// GET /api/doctor/workspace-summary — Aggregated overview for Doctor Home
+router.get('/workspace-summary', asyncHandler(async (req, res) => {
+  const { getDoctorWorkspaceSummary } = await import('../services/doctorWorkspaceService.js');
+  const doctorId = req.query.doctorId || req.headers['x-doctor-id'] || req.user?._id;
+  const date = req.query.date;
+
+  const summary = await getDoctorWorkspaceSummary({ doctorId, date });
+  res.json({ success: true, data: summary });
+}));
+
+// GET /api/doctor/encounter/:appointmentId — Consent-gated patient clinical encounter dossier
+router.get('/encounter/:appointmentId', asyncHandler(async (req, res) => {
+  const { getPatientEncounter } = await import('../services/doctorWorkspaceService.js');
+  const { appointmentId } = req.params;
+  const doctorId = req.query.doctorId || req.headers['x-doctor-id'] || req.user?._id;
+
+  const encounter = await getPatientEncounter({ appointmentId, doctorId });
+  res.json({ success: true, data: encounter });
+}));
+
+// POST /api/doctor/encounter/:appointmentId/start — Start consultation
+router.post('/encounter/:appointmentId/start', asyncHandler(async (req, res) => {
+  const { startConsultation } = await import('../services/doctorWorkspaceService.js');
+  const { appointmentId } = req.params;
+  const doctorId = req.body?.doctorId || req.headers['x-doctor-id'] || req.user?._id;
+
+  const result = await startConsultation({ appointmentId, doctorId });
+  res.json({ success: true, message: 'Consultation started', data: result });
+}));
+
+// POST /api/doctor/encounter/:appointmentId/complete — Complete consultation & auto-generate history
+router.post('/encounter/:appointmentId/complete', asyncHandler(async (req, res) => {
+  const { completeConsultationEncounter } = await import('../services/doctorWorkspaceService.js');
+  const { appointmentId } = req.params;
+  const doctorId = req.body?.doctorId || req.headers['x-doctor-id'] || req.user?._id;
+  const { notes, diagnosis } = req.body || {};
+
+  const result = await completeConsultationEncounter({ appointmentId, doctorId, notes, diagnosis });
+  res.json({ success: true, message: 'Consultation completed successfully', data: result });
+}));
+
+// POST /api/doctor/encounter/:appointmentId/prescription — Issue digital prescription
+router.post('/encounter/:appointmentId/prescription', asyncHandler(async (req, res) => {
+  const { issueEncounterPrescription } = await import('../services/doctorWorkspaceService.js');
+  const { appointmentId } = req.params;
+  const doctorId = req.body?.doctorId || req.headers['x-doctor-id'] || req.user?._id;
+  const { patientId, medications, diagnosis, instructions, doctorName } = req.body || {};
+
+  const prescription = await issueEncounterPrescription({
+    appointmentId,
+    doctorId,
+    patientId,
+    medications,
+    diagnosis,
+    instructions,
+    doctorName,
+  });
+  res.status(201).json({ success: true, message: 'Prescription issued successfully', data: prescription });
+}));
+
+// POST /api/doctor/encounter/:appointmentId/order-test — Order diagnostic test
+router.post('/encounter/:appointmentId/order-test', asyncHandler(async (req, res) => {
+  const { issueEncounterTestOrder } = await import('../services/doctorWorkspaceService.js');
+  const { appointmentId } = req.params;
+  const doctorId = req.body?.doctorId || req.headers['x-doctor-id'] || req.user?._id;
+  const { patientId, testName, reason, doctorName } = req.body || {};
+
+  const order = await issueEncounterTestOrder({
+    appointmentId,
+    doctorId,
+    patientId,
+    testName,
+    reason,
+    doctorName,
+  });
+  res.status(201).json({ success: true, message: 'Diagnostic test ordered successfully', data: order });
+}));
+
+// POST /api/doctor/encounter/:appointmentId/care-plan — Issue doctor care plan
+router.post('/encounter/:appointmentId/care-plan', asyncHandler(async (req, res) => {
+  const { issueEncounterCarePlan } = await import('../services/doctorWorkspaceService.js');
+  const { appointmentId } = req.params;
+  const doctorId = req.body?.doctorId || req.headers['x-doctor-id'] || req.user?._id;
+  const { patientId, doctorName, ...carePlanData } = req.body || {};
+
+  const carePlan = await issueEncounterCarePlan({
+    appointmentId,
+    doctorId,
+    patientId,
+    carePlanData,
+    doctorName,
+  });
+  res.status(201).json({ success: true, message: 'Doctor care plan issued successfully', data: carePlan });
+}));
+
+// POST /api/doctor/encounter/:appointmentId/verified-history — Add doctor-verified medical history
+router.post('/encounter/:appointmentId/verified-history', asyncHandler(async (req, res) => {
+  const { addDoctorVerifiedHistory } = await import('../services/doctorWorkspaceService.js');
+  const { appointmentId } = req.params;
+  const doctorId = req.body?.doctorId || req.headers['x-doctor-id'] || req.user?._id;
+  const { patientId, condition, conditionDate, notes, doctorName } = req.body || {};
+
+  const entry = await addDoctorVerifiedHistory({
+    appointmentId,
+    doctorId,
+    patientId,
+    condition,
+    conditionDate,
+    notes,
+    doctorName,
+  });
+  res.status(201).json({ success: true, message: 'Doctor-verified history entry recorded', data: entry });
+}));
+
 export default router;

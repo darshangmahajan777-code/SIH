@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  # ── MongoDB ──
+  # ── MongoDB Database (Persistent Storage) ──
   mongodb:
     image: mongo:7
     container_name: hc01-mongodb
@@ -13,12 +13,13 @@ services:
     environment:
       - MONGO_INITDB_DATABASE=hospital-queue
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh --quiet
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand(\"ping\").ok' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
 
-  # ── Redis (for scalability) ──
+  # ── Redis (Scalability & Job Scheduling) ──
   redis:
     image: redis:7-alpine
     container_name: hc01-redis
@@ -31,7 +32,26 @@ services:
       timeout: 5s
       retries: 5
 
-  # ── Backend Server ──
+  # ── AI Microservice (FastAPI Clinical Decision Support) ──
+  ai:
+    build:
+      context: ./ai
+      dockerfile: ../docker/Dockerfile.ai
+    container_name: hc01-ai
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - AI_HOST=0.0.0.0
+      - AI_PORT=8001
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── Backend Server (Node.js Express + Socket.IO) ──
   server:
     build:
       context: ./server
@@ -44,33 +64,23 @@ services:
       - NODE_ENV=production
       - PORT=5000
       - MONGO_URI=mongodb://mongodb:27017/hospital-queue
+      - JWT_SECRET=${JWT_SECRET:-mediqueue-production-jwt-secret-replace-with-env}
+      - ADMIN_API_KEY=${ADMIN_API_KEY:-sih-admin-secret-key-2026}
       - AI_URL=http://ai:8001
-      - CORS_ORIGIN=http://localhost:3000
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000,http://localhost:5173,http://localhost:80}
     depends_on:
       mongodb:
         condition: service_healthy
+      ai:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/api/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/health"]
       interval: 15s
       timeout: 5s
       retries: 3
+      start_period: 15s
 
-  # ── AI Service ──
-  ai:
-    build:
-      context: ./ai
-      dockerfile: ../docker/Dockerfile.ai
-    container_name: hc01-ai
-    restart: unless-stopped
-    ports:
-      - "8001:8001"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-
-  # ── Frontend (production build) ──
+  # ── Frontend Client (Nginx Reverse Proxy & Static SPA) ──
   client:
     build:
       context: ./client
@@ -80,7 +90,15 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - server
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   mongodb_data:
+    name: hc01_mongodb_data

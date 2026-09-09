@@ -14,6 +14,12 @@ const appointmentSchema = new mongoose.Schema(
       required: [true, 'Doctor ID is required'],
       index: true,
     },
+    hospitalId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Hospital',
+      default: null,
+      index: true,
+    },
     date: {
       type: String, // Stored as standard YYYY-MM-DD for reliable day matching
       required: [true, 'Appointment date is required'],
@@ -74,6 +80,13 @@ appointmentSchema.index(
     partialFilterExpression: { status: { $ne: 'cancelled' } },
   }
 );
+
+// High-frequency query compound indexes
+appointmentSchema.index({ patientId: 1, date: 1, status: 1 });
+appointmentSchema.index({ patientId: 1, date: -1 });
+appointmentSchema.index({ doctorId: 1, date: 1, status: 1 });
+appointmentSchema.index({ date: 1, status: 1, tokenId: 1 });
+appointmentSchema.index({ hospitalId: 1, date: -1 });
 
 const Appointment = mongoose.models.Appointment || mongoose.model('Appointment', appointmentSchema);
 export default Appointment;

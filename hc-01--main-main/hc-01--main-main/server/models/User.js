@@ -22,13 +22,56 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['patient', 'doctor', 'receptionist', 'admin'],
+      enum: ['patient', 'doctor', 'receptionist', 'hospital_admin', 'admin'],
       default: 'patient',
       required: true,
+    },
+    hospitalId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Hospital',
+      default: null,
+      index: true,
     },
     phone: {
       type: String,
       trim: true,
+    },
+    age: {
+      type: Number,
+      min: 0,
+      max: 130,
+      default: null,
+    },
+    gender: {
+      type: String,
+      enum: ['male', 'female', 'other', 'prefer_not_to_say'],
+      default: 'prefer_not_to_say',
+    },
+    bloodGroup: {
+      type: String,
+      enum: ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-', 'unknown'],
+      default: 'unknown',
+    },
+    height: {
+      type: Number, // in centimeters
+      min: 20,
+      max: 300,
+      default: null,
+    },
+    weight: {
+      type: Number, // in kilograms
+      min: 1,
+      max: 500,
+      default: null,
+    },
+    allergies: {
+      type: [String],
+      default: [],
+    },
+    emergencyContact: {
+      name: { type: String, default: '' },
+      phone: { type: String, default: '' },
+      relation: { type: String, default: '' },
     },
     isActive: {
       type: Boolean,

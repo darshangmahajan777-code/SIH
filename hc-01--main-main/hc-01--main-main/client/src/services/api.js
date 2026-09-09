@@ -1,16 +1,40 @@
 import axios from 'axios';
 
-// In production, VITE_API_URL points to the actual backend (e.g. Render).
-// In development, the Vite dev server proxy handles '/api' routing.
-const API_BASE = import.meta.env.VITE_API_URL
-  ? `${import.meta.env.VITE_API_URL}/api`
-  : '/api';
+// Helper to determine the configured external backend base URL
+export const getApiBase = () => {
+  const url = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || import.meta.env.VITE_BACKEND_URL;
+  return url ? url.replace(/\/+$/, '') : '';
+};
+
+export const apiUrl = (endpoint = '') => {
+  const base = getApiBase();
+  const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  return base ? `${base}${path}` : path;
+};
+
+// In production, VITE_API_URL or VITE_BACKEND_URL points to the actual backend.
+// In development, the Vite dev server proxy handles '/api' routing if unconfigured.
+const API_BASE = getApiBase() ? `${getApiBase()}/api` : '/api';
 
 const API = axios.create({
   baseURL: API_BASE,
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 });
+
+// Auto-prefix window.fetch for /api paths when an external backend URL is configured
+if (typeof window !== 'undefined' && window.fetch) {
+  const externalBase = getApiBase();
+  if (externalBase) {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      if (typeof input === 'string' && input.startsWith('/api')) {
+        return originalFetch(`${externalBase}${input}`, init);
+      }
+      return originalFetch(input, init);
+    };
+  }
+}
 
 // Response interceptor: backend payload shape is { success, data, error }
 API.interceptors.response.use(

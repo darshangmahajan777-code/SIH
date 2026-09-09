@@ -75,12 +75,22 @@ export default function PatientAppointmentsDashboard() {
     fetchAppointments(activeTab);
   }, [activeTab]);
 
+  // Walk-in Token Tracker state
+  const [tokenSearchInput, setTokenSearchInput] = useState('');
+  const [tokenSearchLoading, setTokenSearchLoading] = useState(false);
+  const [tokenSearchError, setTokenSearchError] = useState(null);
+
   // Socket.IO real-time updates & room join
   useEffect(() => {
     const socket = getSocket();
     const patientRoom = `patient-room:${patientId}`;
 
-    socket.emit('join_room', patientRoom);
+    const joinPatientRoom = () => {
+      socket.emit('join_room', patientRoom);
+    };
+
+    joinPatientRoom();
+    socket.on('connect', joinPatientRoom);
 
     const handlePositionUpdate = (data) => {
       setLiveQueueData((prev) => ({
@@ -107,10 +117,33 @@ export default function PatientAppointmentsDashboard() {
     socket.on('queue:near-turn', handleNearTurn);
 
     return () => {
+      socket.off('connect', joinPatientRoom);
       socket.off('queue:position-update', handlePositionUpdate);
       socket.off('queue:near-turn', handleNearTurn);
     };
   }, [patientId]);
+
+  // Track walk-in token
+  const handleTrackWalkInToken = async (e) => {
+    e?.preventDefault();
+    if (!tokenSearchInput.trim()) return;
+    setTokenSearchLoading(true);
+    setTokenSearchError(null);
+    try {
+      const res = await fetch(`/api/tokens/track/${encodeURIComponent(tokenSearchInput.trim())}/queue-position`);
+      const json = await res.json();
+      if (json.success && json.position !== undefined) {
+        setLiveQueueData(json);
+        setActionMsg(`Tracking Token #${json.tokenNumber} live!`);
+      } else {
+        setTokenSearchError(json.error || `Token #${tokenSearchInput} not found in today's active queue`);
+      }
+    } catch (err) {
+      setTokenSearchError('Network error checking token');
+    } finally {
+      setTokenSearchLoading(false);
+    }
+  };
 
   // Cancel handler
   const handleCancel = async (aptId) => {
@@ -257,91 +290,121 @@ export default function PatientAppointmentsDashboard() {
         </div>
       )}
 
+      {/* Walk-in Token Lookup Bar */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3">
+        <div className="text-xs text-slate-600">
+          <strong className="text-slate-900 font-bold">Have a walk-in or kiosk token?</strong> Track your live virtual queue position & arrival time:
+        </div>
+        <form onSubmit={handleTrackWalkInToken} className="flex items-center gap-2 w-full sm:w-auto">
+          <input
+            type="text"
+            placeholder="e.g. 31"
+            value={tokenSearchInput}
+            onChange={(e) => setTokenSearchInput(e.target.value)}
+            className="px-3 py-1.5 text-xs rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 w-28 text-center font-bold"
+          />
+          <button
+            type="submit"
+            disabled={tokenSearchLoading}
+            className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-3 py-1.5 rounded-xl transition shadow-sm"
+          >
+            {tokenSearchLoading ? 'Tracking...' : 'Track Token'}
+          </button>
+        </form>
+      </div>
+      {tokenSearchError && (
+        <div className="text-xs text-rose-600 font-medium px-2">
+          {tokenSearchError}
+        </div>
+      )}
+
       {/* Prominent Smart Virtual Queue Card (YOUR QUEUE) */}
-      {activeTab === 'today' && liveQueueData && (
-        <div className="bg-gradient-to-br from-slate-900 via-indigo-950 to-blue-950 rounded-3xl p-6 sm:p-8 text-white shadow-xl border border-indigo-500/20 relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
+      {liveQueueData && (
+        <div className="bg-gradient-to-br from-slate-950 via-indigo-950 to-blue-950 rounded-3xl p-6 sm:p-8 text-white shadow-2xl border border-indigo-500/30 relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-80 h-80 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-5 mb-6">
             <div className="flex items-center gap-3">
-              <span className="bg-blue-500/20 border border-blue-400/30 text-blue-300 font-bold text-xs px-3 py-1 rounded-full uppercase tracking-wider flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
-                YOUR QUEUE (LIVE)
+              <span className="bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 font-black text-sm px-4 py-1.5 rounded-full uppercase tracking-wider flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+                YOUR QUEUE
               </span>
-              <span className="text-xs text-slate-300">
+              <span className="text-base font-extrabold text-blue-200">
                 Token #{liveQueueData.tokenNumber}
               </span>
             </div>
-            <Link
-              to="/display"
-              className="text-xs font-semibold text-blue-300 hover:text-white transition flex items-center gap-1"
-            >
-              Public Waiting Board →
-            </Link>
+            <div className="flex items-center gap-4">
+              <Link
+                to="/display"
+                className="text-xs font-semibold text-blue-300 hover:text-white transition flex items-center gap-1"
+              >
+                Public Waiting Board →
+              </Link>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            {/* Token & Current Position */}
-            <div className="bg-white/5 backdrop-blur-md rounded-2xl p-4 border border-white/10">
-              <div className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                Current Position
+            {/* Current Position */}
+            <div className="bg-white/5 backdrop-blur-md rounded-2xl p-5 border border-white/10">
+              <div className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Current position:
               </div>
-              <div className="text-3xl font-black mt-1 text-white flex items-baseline gap-2">
-                #{liveQueueData.position}
-                <span className="text-xs font-medium text-slate-400">in line</span>
+              <div className="text-4xl font-black mt-2 text-white flex items-baseline gap-2">
+                {liveQueueData.position}
+                <span className="text-xs font-medium text-slate-400">in queue</span>
               </div>
               <div className="text-xs text-blue-200 mt-2 font-semibold">
                 Token #{liveQueueData.tokenNumber}
               </div>
             </div>
 
-            {/* Patients Ahead */}
-            <div className="bg-white/5 backdrop-blur-md rounded-2xl p-4 border border-white/10">
-              <div className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                Patients Ahead
+            {/* Estimated Time */}
+            <div className="bg-white/5 backdrop-blur-md rounded-2xl p-5 border border-white/10">
+              <div className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Estimated time:
               </div>
-              <div className="text-3xl font-black mt-1 text-amber-400">
-                {liveQueueData.patientsAhead}
-              </div>
-              <div className="text-xs text-slate-300 mt-2">
-                {liveQueueData.patientsAhead === 0 ? 'You are next in line!' : `${liveQueueData.patientsAhead} waiting before you`}
-              </div>
-            </div>
-
-            {/* Estimated Consultation Window */}
-            <div className="bg-white/5 backdrop-blur-md rounded-2xl p-4 border border-white/10">
-              <div className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                Estimated Time
-              </div>
-              <div className="text-xl sm:text-2xl font-black mt-1 text-emerald-300">
+              <div className="text-2xl sm:text-3xl font-black mt-2 text-emerald-300">
                 {liveQueueData.estimatedWindow || liveQueueData.estimatedTime}
               </div>
               <div className="text-xs text-slate-300 mt-2">
-                Expected ~{liveQueueData.estimatedTime}
+                Realistic time window (±10 min)
               </div>
             </div>
 
             {/* Recommended Arrival */}
-            <div className="bg-white/5 backdrop-blur-md rounded-2xl p-4 border border-white/10">
-              <div className="text-xs font-medium text-slate-400 uppercase tracking-wider">
-                Recommended Arrival
+            <div className="bg-white/5 backdrop-blur-md rounded-2xl p-5 border border-white/10">
+              <div className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Recommended arrival:
               </div>
-              <div className="text-xl sm:text-2xl font-black mt-1 text-sky-300">
+              <div className="text-2xl sm:text-3xl font-black mt-2 text-sky-300">
                 {liveQueueData.recommendedArrivalTime}
               </div>
               <div className="text-xs text-slate-300 mt-2">
-                Avoid hospital waiting room
+                Arrive 15 min before window
+              </div>
+            </div>
+
+            {/* Patients Ahead */}
+            <div className="bg-white/5 backdrop-blur-md rounded-2xl p-5 border border-white/10">
+              <div className="text-xs font-bold text-slate-300 uppercase tracking-wider">
+                Patients ahead:
+              </div>
+              <div className="text-4xl font-black mt-2 text-amber-400">
+                {liveQueueData.patientsAhead}
+              </div>
+              <div className="text-xs text-slate-300 mt-2">
+                {liveQueueData.patientsAhead === 0 ? '🎉 You are next in line!' : `${liveQueueData.patientsAhead} patients ahead of you`}
               </div>
             </div>
           </div>
 
-          <div className="mt-5 pt-4 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-400 gap-2">
-            <span>
-              Priority: <strong className="text-white capitalize">{liveQueueData.priority}</strong> — {liveQueueData.reason}
-            </span>
-            <span className="text-[11px] text-slate-400">
-              Auto-updating live via Socket.IO • Last checked {new Date(liveQueueData.lastUpdated || Date.now()).toLocaleTimeString()}
-            </span>
+          <div className="mt-6 pt-4 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between text-xs text-slate-300 gap-2">
+            <div>
+              Priority: <strong className="text-white capitalize">{liveQueueData.priority}</strong> — <span className="text-slate-300">{liveQueueData.reason}</span>
+            </div>
+            <div className="text-[11px] text-slate-400">
+              Auto-updating in real time via Socket.IO • Last updated {new Date(liveQueueData.lastUpdated || Date.now()).toLocaleTimeString()}
+            </div>
           </div>
         </div>
       )}
@@ -478,6 +541,15 @@ export default function PatientAppointmentsDashboard() {
 
                 {/* Actions */}
                 <div className="flex flex-row md:flex-col items-center md:items-end gap-2 border-t md:border-t-0 pt-3 md:pt-0">
+                  {apt.mode === 'video' && ['booked', 'checked-in', 'in-progress'].includes(apt.status) && (
+                    <Link
+                      to={`/telemedicine/${apt._id}`}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-xl shadow-sm transition flex items-center gap-1.5"
+                    >
+                      <span>📹</span> Join Video Call
+                    </Link>
+                  )}
+
                   {isToday && apt.status === 'booked' && (
                     <button
                       type="button"

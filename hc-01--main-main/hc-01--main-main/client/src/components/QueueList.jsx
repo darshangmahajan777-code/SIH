@@ -1,6 +1,13 @@
 import TokenCard from './TokenCard';
 
-export default function QueueList({ queue, onAction, actionLabel, isDoctorView = false, displayMode = false }) {
+export default function QueueList({
+  queue,
+  onAction,
+  actionLabel,
+  isDoctorView = false,
+  displayMode = false,
+  onOverride,
+}) {
   if (!queue || queue.length === 0) {
     return (
       <div className="text-center py-12 opacity-50">
@@ -21,8 +28,8 @@ export default function QueueList({ queue, onAction, actionLabel, isDoctorView =
                 #{index + 1}
               </span>
               <span className={`w-3 h-3 rounded-full ${
-                token.priority === 'emergency' ? 'bg-red-500 animate-pulse' :
-                token.priority === 'senior' ? 'bg-amber-500' : 'bg-sky-500'
+                ['critical', 'emergency'].includes(token.priority) ? 'bg-red-500 animate-pulse' :
+                ['urgent', 'senior'].includes(token.priority) ? 'bg-amber-500' : 'bg-sky-500'
               }`} />
               <span className="font-bold text-white text-lg">
                 {token.tokenNumber !== undefined ? `A${String(token.tokenNumber).padStart(3, '0')}` : '--'}
@@ -48,6 +55,7 @@ export default function QueueList({ queue, onAction, actionLabel, isDoctorView =
             token={token}
             onAction={isDoctorView && token.status === 'in-progress' ? onAction : undefined}
             actionLabel={actionLabel}
+            onOverride={onOverride}
           />
         </div>
       ))}

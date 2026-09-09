@@ -26,6 +26,7 @@ router.post('/', asyncHandler(async (req, res) => {
     mode = 'in-person',
     priority = 'routine',
     chiefComplaint = '',
+    hospitalId,
   } = req.body;
 
   const effectivePatientId = patientId || req.user?._id || req.user?.id;
@@ -33,6 +34,7 @@ router.post('/', asyncHandler(async (req, res) => {
   const appointment = await bookAppointmentSlot({
     doctorId,
     patientId: effectivePatientId,
+    hospitalId,
     date,
     slotTime,
     mode,
@@ -68,8 +70,17 @@ router.patch('/:id/check-in', asyncHandler(async (req, res) => {
  */
 router.patch('/:id/cancel', asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { reason } = req.body;
-  const userId = req.user?._id || req.body.userId;
+  const { reason } = req.body || {};
+  const userId =
+    req.user?._id?.toString() ||
+    req.headers['x-user-id'] ||
+    req.headers['x-patient-id'] ||
+    req.headers['x-doctor-id'] ||
+    req.body?.userId;
+
+  if (!userId) {
+    throw new AppError('Authentication required: valid identity must be provided to cancel an appointment', 401);
+  }
 
   const cancelled = await cancelAppointment({
     appointmentId: id,
@@ -90,8 +101,16 @@ router.patch('/:id/cancel', asyncHandler(async (req, res) => {
  */
 router.patch('/:id/reschedule', asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { newDate, newSlotTime } = req.body;
-  const userId = req.user?._id || req.body.userId;
+  const { newDate, newSlotTime } = req.body || {};
+  const userId =
+    req.user?._id?.toString() ||
+    req.headers['x-user-id'] ||
+    req.headers['x-patient-id'] ||
+    req.body?.userId;
+
+  if (!userId) {
+    throw new AppError('Authentication required: valid identity must be provided to reschedule an appointment', 401);
+  }
 
   if (!newDate || !newSlotTime) {
     throw new AppError('newDate and newSlotTime are required', 400);
@@ -184,6 +203,14 @@ router.get('/:id/queue-position', asyncHandler(async (req, res) => {
 
   res.json({
     success: true,
+    position: data.position,
+    patientsAhead: data.patientsAhead,
+    estimatedTime: data.estimatedTime,
+    estimatedWindow: data.estimatedWindow,
+    recommendedArrivalTime: data.recommendedArrivalTime,
+    priority: data.priority,
+    reason: data.reason,
+    lastUpdated: data.lastUpdated,
     data,
   });
 }));

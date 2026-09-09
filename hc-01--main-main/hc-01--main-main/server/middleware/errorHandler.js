@@ -1,15 +1,25 @@
 // Global error handling middleware
 export const errorHandler = (err, req, res, next) => {
-  console.error('Error:', err.message);
-  console.error('Stack:', err.stack);
+  const isProduction = process.env.NODE_ENV === 'production';
+  const isOperational = Boolean(err.isOperational);
 
   const statusCode = err.statusCode || 500;
-  const message = err.message || 'Internal Server Error';
+  let clientMessage = err.message || 'Internal Server Error';
+
+  // In production, mask internal server / DB exceptions to prevent information disclosure
+  if (isProduction && statusCode === 500 && !isOperational) {
+    clientMessage = 'An unexpected internal server error occurred. Please contact support.';
+  }
+
+  console.error(`[Error] ${req.method} ${req.originalUrl} - ${statusCode}: ${err.message}`);
+  if (!isProduction && err.stack) {
+    console.error(err.stack);
+  }
 
   res.status(statusCode).json({
     success: false,
-    error: message,
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack }),
+    error: clientMessage,
+    ...(!isProduction && { stack: err.stack }),
   });
 };
 
@@ -18,6 +28,7 @@ export class AppError extends Error {
   constructor(message, statusCode = 500) {
     super(message);
     this.statusCode = statusCode;
+    this.status = statusCode;
     this.isOperational = true;
     Error.captureStackTrace(this, this.constructor);
   }

@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 import math
+import os
 import uvicorn
 
 app = FastAPI(title="Hospital Queue AI Service", version="2.0.0")
@@ -224,10 +225,12 @@ class RankedDoctorItem(BaseModel):
     bayesian_rating: float
     distance_km: Optional[float] = None
     recommended_because: List[str]
+    rank: Optional[int] = None
 
 class RankDoctorsResponse(BaseModel):
     ranked_doctors: List[RankedDoctorItem]
     algorithm: str = "bayesian_multi_factor"
+
 
 
 @app.post("/rank-doctors", response_model=RankDoctorsResponse)
@@ -324,8 +327,438 @@ async def rank_doctors(req: RankDoctorsRequest):
         ))
 
     ranked.sort(key=lambda x: x.score, reverse=True)
+    for idx, item in enumerate(ranked):
+        item.rank = idx + 1
     return RankDoctorsResponse(ranked_doctors=ranked)
 
 
+# ── Smart Virtual Queue: Priority Scoring & Patient Wait-Time Estimation ──
+
+class EvaluateConditionRequest(BaseModel):
+    condition: str
+    age: Optional[int] = None
+    vitals: Optional[dict] = None
+
+class EvaluateConditionResponse(BaseModel):
+    priority: str  # critical, urgent, routine
+    score: int     # 0-100
+    reason: str
+    confidence: float
+    decision_source: str = "ai_cds"
+    is_cds_recommendation: bool = True
+    disclaimer: str = (
+        "Clinical Decision Support (CDS) recommendation only. "
+        "Not an autonomous medical diagnosis. Physician/clinician oversight required."
+    )
+
+class QueueItemInput(BaseModel):
+    token_id: str
+    token_number: int
+    priority: str = "routine"
+    arrival_time: Optional[str] = None
+
+class PriorityScoreRequest(BaseModel):
+    queue: List[QueueItemInput]
+    starvation_limit: Optional[int] = 2
+
+class ReorderedQueueItem(BaseModel):
+    token_id: str
+    token_number: int
+    priority: str
+    original_position: int
+    effective_position: int
+    reason: str
+
+class PriorityScoreResponse(BaseModel):
+    effective_queue: List[ReorderedQueueItem]
+    algorithm: str = "anti_starvation_priority_interleaving"
+    starvation_limit: int = 2
+
+class PatientWaitEstimateRequest(BaseModel):
+    token_id: Optional[str] = None
+    patients_ahead: int
+    avg_time: float = 10.0
+    time_of_day: Optional[float] = None
+    elapsed_in_progress_minutes: Optional[float] = 0.0
+
+class PatientWaitEstimateResponse(BaseModel):
+    estimated_wait_minutes: float
+    confidence: float
+    factors: dict
+
+
+@app.post("/priority/evaluate-condition", response_model=EvaluateConditionResponse)
+async def evaluate_condition(req: EvaluateConditionRequest):
+    """
+    Clinical Decision Support (CDS) Triage Evaluation:
+    Evaluates patient presentation against clinical acuity criteria (inspired by ESI/MTS).
+    Explicitly marked as clinical decision SUPPORT — not autonomous diagnosis.
+    Clinician judgement always governs patient care and override authority.
+    """
+    cond = (req.condition or "").lower().strip()
+    vitals = req.vitals or {}
+
+    # Check vitals if provided
+    spo2 = vitals.get("spo2")
+    hr = vitals.get("heart_rate") or vitals.get("hr")
+    temp = vitals.get("temperature") or vitals.get("temp")
+
+    # Critical patterns (Level 1 / 2 acuity)
+    critical_keywords = [
+        "chest pain", "heart attack", "cardiac", "stroke", "seizure",
+        "unconscious", "unresponsive", "anaphylaxis", "choking", "cannot breathe",
+        "severe bleeding", "severe trauma", "cyanosis", "coma", "respiratory distress",
+    ]
+    # Urgent patterns (Level 3 acuity)
+    urgent_keywords = [
+        "fracture", "high fever", "abdominal pain", "asthma", "vomiting blood",
+        "head injury", "deep cut", "severe burn", "kidney stone", "acute pain",
+        "dehydration", "dislocation", "breathing difficulty",
+    ]
+
+    is_critical = any(kw in cond for kw in critical_keywords)
+    if spo2 is not None and float(spo2) < 90.0:
+        is_critical = True
+    if hr is not None and (float(hr) > 140 or float(hr) < 40):
+        is_critical = True
+
+    if is_critical:
+        matched = [kw for kw in critical_keywords if kw in cond]
+        matched_str = matched[0] if matched else "critical vital parameters"
+        return EvaluateConditionResponse(
+            priority="critical",
+            score=95,
+            reason=f"Clinical priority: Potential acute emergency indicated by '{matched_str}'. Requires urgent clinician review.",
+            confidence=0.94,
+        )
+
+    is_urgent = any(kw in cond for kw in urgent_keywords)
+    if req.age is not None and req.age < 1 and ("fever" in cond or (temp and float(temp) > 100.4)):
+        is_urgent = True
+    if spo2 is not None and 90.0 <= float(spo2) <= 94.0:
+        is_urgent = True
+    if hr is not None and 110 <= float(hr) <= 140:
+        is_urgent = True
+
+    if is_urgent:
+        matched = [kw for kw in urgent_keywords if kw in cond]
+        matched_str = matched[0] if matched else "abnormal physiological indicators"
+        return EvaluateConditionResponse(
+            priority="urgent",
+            score=70,
+            reason=f"Clinical priority: Expedited attention recommended for '{matched_str}'.",
+            confidence=0.88,
+        )
+
+    # Routine (Level 4 / 5 acuity)
+    return EvaluateConditionResponse(
+        priority="routine",
+        score=25,
+        reason="Clinical priority: Non-emergent presentation suitable for standard queue order.",
+        confidence=0.90,
+    )
+
+
+@app.post("/priority-score", response_model=PriorityScoreResponse)
+async def priority_score(req: PriorityScoreRequest):
+    """
+    Priority Queuing with Configurable Anti-Starvation Interleaving:
+    Critical and urgent patients get moved ahead of routine cases,
+    while guaranteeing that routine patients are interleaved so no patient
+    starves indefinitely. Provides transparent, auditable reasons for every position.
+    """
+    raw_queue = req.queue
+    starvation_limit = max(1, req.starvation_limit if req.starvation_limit is not None else 2)
+
+    if not raw_queue:
+        return PriorityScoreResponse(effective_queue=[], starvation_limit=starvation_limit)
+
+    def normalize_priority(p: str) -> str:
+        pl = (p or "").lower().strip()
+        if pl in ["critical", "emergency"]: return "critical"
+        if pl in ["urgent", "senior"]: return "urgent"
+        return "routine"
+
+    criticals = []
+    urgents = []
+    routines = []
+
+    for idx, item in enumerate(raw_queue):
+        norm_p = normalize_priority(item.priority)
+        entry = {
+            "token_id": item.token_id,
+            "token_number": item.token_number,
+            "priority": norm_p,
+            "original_priority": item.priority,
+            "original_pos": idx + 1,
+            "arrival_time": item.arrival_time,
+        }
+        if norm_p == "critical":
+            criticals.append(entry)
+        elif norm_p == "urgent":
+            urgents.append(entry)
+        else:
+            routines.append(entry)
+
+    reordered = []
+    consecutive_higher_priority = 0
+
+    while criticals or urgents or routines:
+        # Anti-starvation interleaving
+        if consecutive_higher_priority >= starvation_limit and routines:
+            routine_item = routines.pop(0)
+            reordered.append({
+                **routine_item,
+                "reason": "Interleaved turn: Starvation prevention policy" if routine_item["original_pos"] <= len(reordered) + 1 else "Standard FIFO order",
+            })
+            consecutive_higher_priority = 0
+            continue
+
+        if criticals:
+            crit_item = criticals.pop(0)
+            reason = "Moved up: Critical clinical priority (CDS Recommendation)"
+            reordered.append({**crit_item, "reason": reason})
+            consecutive_higher_priority += 1
+        elif urgents:
+            urg_item = urgents.pop(0)
+            reason = "Priority queue for Urgent patient"
+            reordered.append({**urg_item, "reason": reason})
+            consecutive_higher_priority += 1
+        elif routines:
+            routine_item = routines.pop(0)
+            reason = "Standard FIFO order"
+            reordered.append({**routine_item, "reason": reason})
+            consecutive_higher_priority = 0
+
+    result = []
+    for eff_idx, item in enumerate(reordered):
+        eff_pos = eff_idx + 1
+        orig_pos = item["original_pos"]
+        reason = item["reason"]
+
+        if item["priority"] == "routine" and eff_pos > orig_pos:
+            reason = "Adjusted for incoming Critical/Urgent patients"
+
+        result.append(ReorderedQueueItem(
+            token_id=item["token_id"],
+            token_number=item["token_number"],
+            priority=item["original_priority"],
+            original_position=orig_pos,
+            effective_position=eff_pos,
+            reason=reason,
+        ))
+
+    return PriorityScoreResponse(effective_queue=result, starvation_limit=starvation_limit)
+
+
+@app.post("/wait-estimate/patient", response_model=PatientWaitEstimateResponse)
+async def wait_estimate_patient(req: PatientWaitEstimateRequest):
+    """
+    Patient-specific Poisson wait time estimation:
+    Projects consultation time for an individual token based on effective queue position,
+    time-of-day dynamics, doctor pace (rolling average), and elapsed in-progress consultation.
+    """
+    now = datetime.now()
+    time_of_day = req.time_of_day if req.time_of_day is not None else (now.hour + now.minute / 60.0)
+
+    time_factor = 1.0 + 0.15 * math.sin(time_of_day * math.pi / 12.0)
+    effective_avg = avg_consult_time if len(completion_data) > 3 else max(5.0, req.avg_time)
+
+    in_progress_remaining = 0.0
+    doctor_delay_detected = False
+    if req.elapsed_in_progress_minutes and req.elapsed_in_progress_minutes > 0:
+        if req.elapsed_in_progress_minutes < effective_avg:
+            in_progress_remaining = max(2.0, effective_avg - req.elapsed_in_progress_minutes)
+        else:
+            in_progress_remaining = 3.0 + (req.elapsed_in_progress_minutes - effective_avg) * 0.3
+            doctor_delay_detected = True
+
+    base_wait = req.patients_ahead * effective_avg * time_factor
+    total_wait = in_progress_remaining + base_wait
+
+    uncertainty = min(0.25, req.patients_ahead * 0.02)
+    total_wait *= (1.0 + uncertainty)
+
+    confidence = max(0.5, 1.0 - req.patients_ahead * 0.025)
+    if doctor_delay_detected:
+        confidence = max(0.45, confidence - 0.1)
+
+    return PatientWaitEstimateResponse(
+        estimated_wait_minutes=round(total_wait, 1),
+        confidence=round(confidence, 2),
+        factors={
+            "effective_avg_time": round(effective_avg, 1),
+            "time_factor": round(time_factor, 3),
+            "in_progress_remaining": round(in_progress_remaining, 1),
+            "doctor_delay_detected": doctor_delay_detected,
+            "uncertainty_buffer": round(uncertainty, 3),
+        }
+    )
+
+
+# ── Care Plan Assistance (Non-Autonomous Clinical Guidance) ──
+
+class CarePlanAssistRequest(BaseModel):
+    condition: str
+    patient_age: Optional[int] = None
+    patient_gender: Optional[str] = None
+
+class CarePlanAssistResponse(BaseModel):
+    condition: str
+    diet_recommended: List[str]
+    diet_restricted: List[str]
+    activities_recommended: List[str]
+    activities_restricted: List[str]
+    suggested_follow_up_days: int
+    clinical_notes_template: str
+    is_assistant_draft: bool = True
+    disclaimer: str = (
+        "Clinical Decision Support (CDS) template only. "
+        "Not an autonomous medical diagnosis or prescription. "
+        "The attending physician must review, customize, and authorize all care plans."
+    )
+
+
+@app.post("/care-plan/assist", response_model=CarePlanAssistResponse)
+async def care_plan_assist(req: CarePlanAssistRequest):
+    """
+    Evidence-based care plan draft assistant.
+    Generates structured doctor-editable recommendations for diet, lifestyle, and follow-up.
+    Strictly non-autonomous: clinician review and authorization is required.
+    """
+    c = (req.condition or "").lower().strip()
+
+    if any(k in c for k in ["hypertension", "blood pressure", "bp", "cardiac"]):
+        return CarePlanAssistResponse(
+            condition=req.condition or "Hypertension Management",
+            diet_recommended=[
+                "DASH dietary pattern rich in fresh vegetables and whole grains",
+                "High-potassium fruits (bananas, oranges, leafy greens)",
+                "Low-sodium meals (< 2000 mg/day)",
+                "Optimal hydration (2.5 liters of water daily)",
+            ],
+            diet_restricted=[
+                "High-sodium processed foods, pickles, and canned soups",
+                "Excessive caffeine and carbonated energy drinks",
+                "Saturated trans-fats and fried foods",
+            ],
+            activities_recommended=[
+                "30 minutes moderate brisk walking, 5 days per week",
+                "Daily morning and evening blood pressure log recording",
+                "Deep breathing or mindfulness meditation (10-15 mins daily)",
+            ],
+            activities_restricted=[
+                "Heavy isometric straining or sudden unconditioned heavy lifting",
+                "High-intensity burst cardio without adequate warm-up",
+            ],
+            suggested_follow_up_days=14,
+            clinical_notes_template="Patient advised on DASH dietary compliance and home BP log monitoring. Titrate medication if BP remains above 130/80 mmHg at follow-up.",
+        )
+
+    if any(k in c for k in ["diabetes", "sugar", "glucose"]):
+        return CarePlanAssistResponse(
+            condition=req.condition or "Type-2 Diabetes Glycemic Care",
+            diet_recommended=[
+                "Complex carbohydrates with low glycemic index (oats, barley, brown rice)",
+                "High-fiber green vegetables (spinach, broccoli, beans)",
+                "Lean proteins (pulses, egg whites, grilled fish)",
+                "Consistent meal spacing every 3.5 to 4 hours",
+            ],
+            diet_restricted=[
+                "Refined sugars, sweets, sweetened sodas, and syrups",
+                "Simple carbohydrates and white flour products",
+                "Late-night high-carb snacking",
+            ],
+            activities_recommended=[
+                "30–45 minutes daily aerobic exercise (walking, swimming, light cycling)",
+                "Daily routine inspection of feet for minor cuts or blisters",
+                "Periodic fasting and post-prandial glucose tracking",
+            ],
+            activities_restricted=[
+                "Prolonged unmonitored fasting without physician guidance",
+                "Walking barefoot outdoors",
+            ],
+            suggested_follow_up_days=14,
+            clinical_notes_template="Glycemic management protocol initiated. HbA1c review and lifestyle adherence assessment scheduled at follow-up.",
+        )
+
+    if any(k in c for k in ["asthma", "bronchitis", "respiratory", "cough"]):
+        return CarePlanAssistResponse(
+            condition=req.condition or "Respiratory / Asthma Management",
+            diet_recommended=[
+                "Warm fluids, herbal teas, and clear broths",
+                "Antioxidant-rich fresh seasonal fruits and vitamin C foods",
+                "Light, easily digestible non-acidic meals",
+            ],
+            diet_restricted=[
+                "Iced beverages, ice cream, and cold foods",
+                "Known allergic trigger foods and sulfited dried fruits",
+            ],
+            activities_recommended=[
+                "Gentle diaphragmatic and pursed-lip breathing exercises",
+                "Keep rescue inhaler readily accessible at all times",
+                "Maintain dust-free, well-ventilated indoor environment",
+            ],
+            activities_restricted=[
+                "Outdoor exertion during peak air quality index (AQI) or pollen warnings",
+                "Active or secondhand tobacco and woodfire smoke exposure",
+                "Sudden intense cold-air sprinting",
+            ],
+            suggested_follow_up_days=7,
+            clinical_notes_template="Inhaler technique verified with patient. Advised avoidance of environmental triggers and prompt medical review if PEFR decreases.",
+        )
+
+    if any(k in c for k in ["fracture", "ortho", "joint", "arthritis", "sprain", "back pain"]):
+        return CarePlanAssistResponse(
+            condition=req.condition or "Orthopedic Rehabilitation Care",
+            diet_recommended=[
+                "Calcium and Vitamin D rich dietary items (milk, yogurt, fortified foods)",
+                "Anti-inflammatory foods (turmeric, ginger, berries)",
+                "Adequate lean protein to support tissue healing",
+            ],
+            diet_restricted=[
+                "Excessive refined sugars and pro-inflammatory fried foods",
+                "Alcohol and smoking (impairs bone/ligament healing)",
+            ],
+            activities_recommended=[
+                "Physiotherapist-guided range of motion exercises",
+                "Ergonomic lumbar support during seated work",
+                "Cold compress for acute swelling / moist heat for chronic stiffness",
+            ],
+            activities_restricted=[
+                "Heavy lifting (> 5 kg) or sudden spinal twisting",
+                "High-impact jumping, running, or contact sports",
+            ],
+            suggested_follow_up_days=10,
+            clinical_notes_template="Mobility and pain management protocol. Radiographic re-assessment or physical therapy progress to be evaluated at follow-up.",
+        )
+
+    # General clinical guideline fallback
+    return CarePlanAssistResponse(
+        condition=req.condition or "General Recuperation & Wellness",
+        diet_recommended=[
+            "Balanced nutritious diet emphasizing whole grains, vegetables, and lean proteins",
+            "Adequate daily hydration (2 to 3 liters water daily)",
+        ],
+        diet_restricted=[
+            "Deep-fried, excessively oily, and heavily processed fast foods",
+            "Excessive alcohol, caffeine, and sweetened beverages",
+        ],
+        activities_recommended=[
+            "Adequate restorative sleep (7 to 8 hours nightly)",
+            "Gentle daily movement and light walking as tolerated",
+        ],
+        activities_restricted=[
+            "Physical overexertion and irregular sleep schedules",
+            "Tobacco and smoking products",
+        ],
+        suggested_follow_up_days=7,
+        clinical_notes_template="General clinical advice provided. Patient instructed to monitor symptoms and attend follow-up if condition does not improve.",
+    )
+
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    host = os.getenv("AI_HOST", "0.0.0.0")
+    port = int(os.getenv("AI_PORT", os.getenv("PORT", "8001")))
+    uvicorn.run(app, host=host, port=port)
+

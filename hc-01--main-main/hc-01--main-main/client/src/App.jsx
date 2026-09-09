@@ -12,15 +12,22 @@ import FindDoctors from './pages/FindDoctors';
 import DoctorSchedulePage from './pages/DoctorSchedulePage';
 import PatientAppointmentsDashboard from './pages/PatientAppointmentsDashboard';
 import DoctorAppointmentsDashboard from './pages/DoctorAppointmentsDashboard';
+import PatientConsentPage from './pages/PatientConsentPage';
+import TelemedicinePage from './pages/TelemedicinePage';
+import UnifiedPatientDashboard from './pages/UnifiedPatientDashboard';
+import DoctorClinicalWorkspace from './pages/DoctorClinicalWorkspace';
+import HospitalAdminPortal from './pages/HospitalAdminPortal';
+import NotificationCenter from './components/NotificationCenter';
 
 const navItems = [
   { path: '/home', label: 'Home' },
+  { path: '/patient-dashboard', label: 'Patient Hub' },
   { path: '/find-doctors', label: 'Find & Book' },
-  { path: '/my-appointments', label: 'My Appointments' },
-  { path: '/doctor-appointments', label: 'Clinical Queue' },
+  { path: '/hospitals', label: '🏥 Hospitals' },
+  { path: '/my-data', label: '🔒 My Data' },
+  { path: '/doctor', label: '🩺 Doctor Workspace' },
   { path: '/doctor-schedule', label: 'Doctor Schedule' },
   { path: '/reception', label: 'Reception' },
-  { path: '/doctor', label: 'Doctor OPD' },
   { path: '/emergency', label: 'Emergency' },
   { path: '/display', label: 'Display' },
 ];
@@ -28,6 +35,8 @@ const navItems = [
 function App() {
   const location = useLocation();
   const [mobileMenu, setMobileMenu] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
   const appRef = useRef(null);
 
   const isDisplayPage = location.pathname === '/display';
@@ -90,13 +99,30 @@ function App() {
             })}
           </div>
 
-          <button
-            type="button"
-            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 md:hidden"
-            onClick={() => setMobileMenu((prev) => !prev)}
-          >
-            Menu
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              id="notification-bell-btn"
+              onClick={() => setNotifOpen((prev) => !prev)}
+              className="relative p-2 text-slate-700 hover:text-slate-900 rounded-xl hover:bg-slate-100 transition"
+              title="Notifications"
+            >
+              <span className="text-xl">🔔</span>
+              {unreadCount > 0 && (
+                <span className="absolute top-1 right-1 bg-rose-500 text-white font-black text-[10px] w-5 h-5 rounded-full flex items-center justify-center shadow-sm animate-pulse">
+                  {unreadCount > 99 ? '99+' : unreadCount}
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-semibold text-slate-700 md:hidden"
+              onClick={() => setMobileMenu((prev) => !prev)}
+            >
+              Menu
+            </button>
+          </div>
         </div>
 
         {mobileMenu && (
@@ -122,18 +148,33 @@ function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/home" replace />} />
             <Route path="/home" element={<Home />} />
+            <Route path="/patient-dashboard" element={<UnifiedPatientDashboard />} />
+            <Route path="/my-appointments" element={<UnifiedPatientDashboard />} />
+            <Route path="/appointments-tracker" element={<PatientAppointmentsDashboard />} />
             <Route path="/find-doctors" element={<FindDoctors />} />
-            <Route path="/my-appointments" element={<PatientAppointmentsDashboard />} />
+            <Route path="/my-data" element={<PatientConsentPage />} />
             <Route path="/doctor-appointments" element={<DoctorAppointmentsDashboard />} />
             <Route path="/doctor-schedule" element={<DoctorSchedulePage />} />
+            <Route path="/telemedicine/:appointmentId" element={<TelemedicinePage />} />
             <Route path="/reception" element={<Reception />} />
-            <Route path="/doctor" element={<Doctor />} />
+            <Route path="/doctor" element={<DoctorClinicalWorkspace />} />
+            <Route path="/doctor-workspace" element={<DoctorClinicalWorkspace />} />
+            <Route path="/doctor-opd" element={<Doctor />} />
             <Route path="/emergency" element={<Emergency />} />
             <Route path="/display" element={<Display />} />
+            <Route path="/hospitals" element={<HospitalAdminPortal />} />
+            <Route path="/hospital-admin" element={<HospitalAdminPortal />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </ErrorBoundary>
       </main>
+
+      <NotificationCenter
+        isOpen={notifOpen}
+        onClose={() => setNotifOpen(false)}
+        unreadCount={unreadCount}
+        setUnreadCount={setUnreadCount}
+      />
     </div>
   );
 }

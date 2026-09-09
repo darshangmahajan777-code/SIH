@@ -20,17 +20,20 @@ export default function FindDoctors() {
     setLoading(true);
     setError(null);
     try {
-      // 1. Fetch daily listing for selected date
-      const listingRes = await fetch(
-        `/api/doctors/daily-listing?date=${selectedDate}&specialty=${encodeURIComponent(specialty)}&maxFee=${maxFee}`
-      );
-      const listingData = await listingRes.json();
+      // 1 & 2. Fetch daily listing and AI / Bayesian recommendations concurrently
+      const [listingRes, recRes] = await Promise.all([
+        fetch(
+          `/api/doctors/daily-listing?date=${selectedDate}&specialty=${encodeURIComponent(specialty)}&maxFee=${maxFee}`
+        ),
+        fetch(
+          `/api/recommendations?specialty=${encodeURIComponent(specialty)}&preference=${preference}&maxFee=${maxFee}&lat=28.6139&lng=77.2090`
+        ),
+      ]);
 
-      // 2. Fetch AI / Bayesian ranked recommendations
-      const recRes = await fetch(
-        `/api/recommendations?specialty=${encodeURIComponent(specialty)}&preference=${preference}&maxFee=${maxFee}&lat=28.6139&lng=77.2090`
-      );
-      const recData = await recRes.json();
+      const [listingData, recData] = await Promise.all([
+        listingRes.json(),
+        recRes.json(),
+      ]);
 
       // Merge availability data with recommendation scores
       const recMap = new Map();

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const AI_URL = process.env.AI_URL || 'http://localhost:8001';
+const getAiUrl = () => process.env.AI_SERVICE_URL || process.env.AI_URL || 'http://localhost:8001';
 
 // Prior parameters for Bayesian rating
 const BAYESIAN_M = 25; // Prior weight (minimum reviews threshold)
@@ -228,7 +228,7 @@ export const getDoctorRecommendations = async ({ doctors = [], criteria = {} }) 
       preference: criteria.preference || 'balanced',
     };
 
-    const aiRes = await axios.post(`${AI_URL}/rank-doctors`, payload, { timeout: 2000 });
+    const aiRes = await axios.post(`${getAiUrl()}/rank-doctors`, payload, { timeout: 2000 });
     if (aiRes.data && Array.isArray(aiRes.data.ranked_doctors)) {
       // Re-map back to original doctor objects
       const docMap = new Map();

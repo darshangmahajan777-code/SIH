@@ -4,31 +4,38 @@ services:
     env: node
     plan: free
     buildCommand: cd client && npm install && npm run build
-    startCommand: cd client && npm run preview
+    startCommand: cd client && npx serve -s dist -l $PORT
     envVars:
-      - key: VITE_SOCKET_URL
-        fromDatabase:
-          name: hospital-queue-db
-          property: connection_string
       - key: VITE_API_URL
-        value: https://hospital-queue-api.onrender.com
+        value: https://hospital-queue-server.onrender.com
+      - key: VITE_SOCKET_URL
+        value: https://hospital-queue-server.onrender.com
+
   - type: web
     name: hospital-queue-server
     env: node
     plan: free
     buildCommand: cd server && npm install
-    startCommand: cd server && npm run start
+    startCommand: cd server && npm start
+    healthCheckPath: /health
     envVars:
+      - key: NODE_ENV
+        value: production
       - key: MONGO_URI
         sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_API_KEY
+        generateValue: true
       - key: AI_URL
-        value: http://localhost:8001
+        value: https://hospital-queue-ai.onrender.com
       - key: CORS_ORIGIN
-        value: https://hospital-queue-client.onrender.com
-  - type: worker
+        value: https://hospital-queue-client.onrender.com,https://*.vercel.app
+
+  - type: web
     name: hospital-queue-ai
     env: python
     plan: free
     buildCommand: cd ai && pip install -r requirements.txt
     startCommand: cd ai && uvicorn main:app --host 0.0.0.0 --port $PORT
-
+    healthCheckPath: /health

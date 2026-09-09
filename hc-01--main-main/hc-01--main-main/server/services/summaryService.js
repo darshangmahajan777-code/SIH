@@ -1,5 +1,16 @@
+import mongoose from 'mongoose';
 import Token from '../models/Token.js';
 import DailySummary from '../models/DailySummary.js';
+
+let inMemoryTokens = [];
+
+export function clearSummaryTestDb() {
+  inMemoryTokens = [];
+}
+
+export function seedSummaryTestDb(tokens = []) {
+  if (tokens.length) inMemoryTokens = [...tokens];
+}
 
 const today = () => new Date().toISOString().split('T')[0];
 
@@ -7,7 +18,12 @@ const today = () => new Date().toISOString().split('T')[0];
 export const generateDailySummary = async (date) => {
   const targetDate = date || today();
 
-  const tokens = await Token.find({ sessionDate: targetDate }).lean();
+  let tokens = [];
+  if (mongoose.connection.readyState === 1) {
+    tokens = await Token.find({ sessionDate: targetDate }).lean();
+  } else {
+    tokens = inMemoryTokens.filter((t) => t.sessionDate === targetDate);
+  }
 
   if (tokens.length === 0) {
     return {
@@ -101,26 +117,36 @@ export const generateDailySummary = async (date) => {
     hourlyBreakdown,
   };
 
-  // Upsert daily summary
-  await DailySummary.findOneAndUpdate(
-    { date: targetDate },
-    summary,
-    { upsert: true, new: true }
-  );
+  // Upsert daily summary if DB connected
+  if (mongoose.connection.readyState === 1) {
+    await DailySummary.findOneAndUpdate(
+      { date: targetDate },
+      summary,
+      { upsert: true, new: true }
+    );
+  }
 
   return summary;
 };
 
 // ── Get summary for a specific date ──
 export const getSummaryByDate = async (date) => {
-  const existing = await DailySummary.findOne({ date }).lean();
-  if (existing) return existing;
+  if (mongoose.connection.readyState === 1) {
+    const existing = await DailySummary.findOne({ date }).lean();
+    if (existing) return existing;
+  }
   return generateDailySummary(date);
 };
 
 // ── Get live stats for today ──
 export const getLiveStats = async () => {
-  const tokens = await Token.find({ sessionDate: today() }).lean();
+  const targetDate = today();
+  let tokens = [];
+  if (mongoose.connection.readyState === 1) {
+    tokens = await Token.find({ sessionDate: targetDate }).lean();
+  } else {
+    tokens = inMemoryTokens.filter((t) => t.sessionDate === targetDate);
+  }
   const waiting = tokens.filter(t => t.status === 'waiting').length;
   const inProgress = tokens.filter(t => t.status === 'in-progress').length;
   const completed = tokens.filter(t => t.status === 'done').length;

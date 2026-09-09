@@ -21,17 +21,44 @@ const getQueueState = async (date) => {
 };
 
 // ── Generate a new token (Refactored Clean Version + Advanced Features) ──
+// ── Generate a new token (Refactored Clean Version + Advanced Features) ──
 export const generateToken = async ({
   patientName,
   age,
   condition,
-  priority = 'general',
+  priority = 'routine',
   department = 'OPD',
 }) => {
   const todayDate = getToday();
   
-  // Map 'normal' to 'general' (schema compatibility)
-  const mappedPriority = priority === 'normal' ? 'general' : priority;
+  // Normalize priority to critical / urgent / routine
+  let mappedPriority = priority;
+  if (priority === 'normal' || priority === 'general') mappedPriority = 'routine';
+  else if (priority === 'senior') mappedPriority = 'urgent';
+  else if (priority === 'emergency') mappedPriority = 'critical';
+
+  let priorityScore = mappedPriority === 'critical' ? 95 : mappedPriority === 'urgent' ? 70 : 25;
+  let priorityReason = 'Standard queue order';
+  let priorityConfidence = 0.9;
+  let decisionSource = 'triage_rule';
+
+  // If a clinical condition is provided and not already manually specified as critical/urgent,
+  // evaluate with Clinical Decision Support (CDS)
+  if (condition && condition.trim().length > 0 && priority === 'routine') {
+    try {
+      const { evaluateConditionPriority } = await import('./priorityService.js');
+      const cds = await evaluateConditionPriority({ condition, age });
+      if (cds) {
+        mappedPriority = cds.priority;
+        priorityScore = cds.score;
+        priorityReason = cds.reason;
+        priorityConfidence = cds.confidence;
+        decisionSource = cds.decisionSource;
+      }
+    } catch (cdsErr) {
+      console.warn('CDS condition evaluation skipped:', cdsErr.message);
+    }
+  }
 
   // 1. Atomic increment of token number
   const state = await QueueState.findOneAndUpdate(
@@ -40,29 +67,30 @@ export const generateToken = async ({
     { upsert: true, new: true }
   );
 
-  // 3. Calculate initial wait time estimate (needed for the create call)
+  // 3. Calculate initial wait time estimate
   const estimatedWaitTime = await calculateWaitTime({
     priority: mappedPriority,
     createdAt: new Date(),
     sessionDate: todayDate
   });
 
-  // 4. Save to MongoDB with requested logs
-  console.log("About to save token");
+  // 4. Save to MongoDB
   const token = await Token.create({
     tokenNumber: state.currentTokenNumber,
     patientName,
     age: age || null,
     condition: condition || '',
     priority: mappedPriority,
+    priorityScore,
+    priorityReason,
+    priorityConfidence,
+    decisionSource,
     department: department || 'OPD',
     status: 'waiting',
-    isEmergency: mappedPriority === 'emergency',
+    isEmergency: mappedPriority === 'critical' || mappedPriority === 'emergency',
     sessionDate: todayDate,
     estimatedWaitTime
   });
-
-  console.log("Saved token:", token);
 
   // 5. Emit real-time events
   const io = getIO();
@@ -74,7 +102,7 @@ export const generateToken = async ({
   return token;
 };
 
-// ── Get active queue (Sorted by Priority & Status) ──
+// ── Get active queue (Sorted by Policy with Starvation Prevention) ──
 export const getQueue = async () => {
   const avgConsult = await getAvgConsultTime();
   const timeFactor = 1 + 0.15 * Math.sin((new Date().getHours() * Math.PI) / 12);
@@ -85,54 +113,88 @@ export const getQueue = async () => {
     status: { $in: ['waiting', 'in-progress', 'done'] } 
   }).lean().exec();
 
-  const statusOrder = { 'in-progress': 0, 'waiting': 1, 'done': 2 };
-  const priorityOrder = { 'emergency': 0, 'senior': 1, 'general': 2 };
+  const inProgressTokens = tokens.filter((t) => t.status === 'in-progress');
+  const waitingTokens = tokens.filter((t) => t.status === 'waiting');
+  const doneTokens = tokens.filter((t) => t.status === 'done');
 
-  // Sort: In-Progress first, then by Priority, then FIFO (createdAt)
-  tokens.sort((a, b) => {
-    if (statusOrder[a.status] !== statusOrder[b.status]) {
-      return statusOrder[a.status] - statusOrder[b.status];
-    }
-    if (a.status === 'waiting') {
-      if (priorityOrder[a.priority] !== priorityOrder[b.priority]) {
-        return priorityOrder[a.priority] - priorityOrder[b.priority];
-      }
+  // Apply intelligent queue policy with starvation prevention to waiting tokens
+  let sortedWaiting = waitingTokens;
+  try {
+    const { applyQueuePolicy } = await import('./priorityService.js');
+    sortedWaiting = await applyQueuePolicy(waitingTokens, { logAudit: false });
+  } catch (err) {
+    // Fallback: priority rank then FIFO
+    const priorityRank = { critical: 1, emergency: 1, urgent: 2, senior: 2, routine: 3, general: 3 };
+    sortedWaiting.sort((a, b) => {
+      const pA = priorityRank[a.priority] || 3;
+      const pB = priorityRank[b.priority] || 3;
+      if (pA !== pB) return pA - pB;
       return new Date(a.createdAt) - new Date(b.createdAt);
-    }
-    return new Date(b.updatedAt) - new Date(a.updatedAt);
-  });
+    });
+  }
 
   // Dynamic wait-time recalculation
   let waitPos = 0;
-  return tokens.map(t => {
-    if (t.status === 'waiting') {
-      waitPos++;
-      t.waitingPosition = waitPos;
-      t.estimatedWaitTime = waitPos * avgConsultAdjusted;
-    } else {
-      t.waitingPosition = 0;
-      t.estimatedWaitTime = 0;
-    }
+  const processedWaiting = sortedWaiting.map((t) => {
+    waitPos++;
+    t.waitingPosition = waitPos;
+    t.estimatedWaitTime = waitPos * avgConsultAdjusted;
     return t;
   });
+
+  const processedInProgress = inProgressTokens.map((t) => {
+    t.waitingPosition = 0;
+    t.estimatedWaitTime = 0;
+    return t;
+  });
+
+  doneTokens.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  const processedDone = doneTokens.map((t) => {
+    t.waitingPosition = 0;
+    t.estimatedWaitTime = 0;
+    return t;
+  });
+
+  return [...processedInProgress, ...processedWaiting, ...processedDone];
 };
 
-// ── Call next patient (Priority-Respecting Search) ──
+// ── Call next patient (Policy-Respecting Search with Starvation Prevention) ──
 export const callNextToken = async () => {
-  const priorityOrder = ['emergency', 'senior', 'general'];
-  let nextToken = null;
+  const waitingTokens = await Token.find({ sessionDate: getToday(), status: 'waiting' })
+    .sort({ createdAt: 1 })
+    .lean();
 
-  for (const p of priorityOrder) {
-    nextToken = await Token.findOneAndUpdate(
-      { sessionDate: getToday(), status: 'waiting', priority: p },
-      { status: 'in-progress', calledAt: new Date() },
-      { sort: { createdAt: 1 }, new: true }
-    );
-    if (nextToken) break;
+  if (!waitingTokens || waitingTokens.length === 0) {
+    throw new Error('No waiting patients in queue');
   }
 
+  let targetToken = waitingTokens[0];
+  try {
+    const { applyQueuePolicy } = await import('./priorityService.js');
+    const reordered = await applyQueuePolicy(waitingTokens, { logAudit: false });
+    if (reordered.length > 0) {
+      targetToken = reordered[0];
+    }
+  } catch (err) {
+    // Fallback priority search
+    const priorityOrder = ['critical', 'emergency', 'urgent', 'senior', 'routine', 'general'];
+    for (const p of priorityOrder) {
+      const match = waitingTokens.find((t) => t.priority === p);
+      if (match) {
+        targetToken = match;
+        break;
+      }
+    }
+  }
+
+  const nextToken = await Token.findByIdAndUpdate(
+    targetToken._id,
+    { status: 'in-progress', calledAt: new Date() },
+    { new: true }
+  );
+
   if (!nextToken) {
-    throw new Error('No waiting patients in queue');
+    throw new Error('Could not call next patient');
   }
 
   // Update real-time state
@@ -167,6 +229,17 @@ export const completeToken = async (tokenNumber) => {
     { $inc: { waitingCount: -1, totalCompleted: 1 } }
   );
 
+  // Invalidate consultation time cache immediately so doctor's new speed is reflected
+  cacheTimestamp = 0;
+
+  // Inform AI service of new completion duration (fire-and-forget)
+  try {
+    const { updateAiData } = await import('./aiService.js');
+    updateAiData(token).catch(() => {});
+  } catch (err) {
+    // ignore
+  }
+
   const io = getIO();
   if (io) {
     io.to('queue-room').emit('consultation_complete', token);
@@ -180,6 +253,10 @@ export const completeToken = async (tokenNumber) => {
 let avgConsultCache = 10;
 let cacheTimestamp = 0;
 const CACHE_TTL = 60 * 1000;
+
+export const clearAvgConsultCache = () => {
+  cacheTimestamp = 0;
+};
 
 export const getAvgConsultTime = async () => {
   const now = Date.now();
@@ -251,9 +328,25 @@ export const emitQueueUpdate = async () => {
 
 // ── Extra Handlers ──
 export const getTokenById = async (id) => Token.findById(id).lean();
+
 export const cancelToken = async (id) => {
   const token = await Token.findByIdAndUpdate(id, { status: 'cancelled', cancelledAt: new Date() }, { new: true });
   await QueueState.findOneAndUpdate({ date: getToday(), department: 'OPD' }, { $inc: { waitingCount: -1, totalCancelled: 1 } });
+  await emitQueueUpdate();
+  return token;
+};
+
+export const updateTokenPriority = async (id, newPriority) => {
+  const valid = ['emergency', 'senior', 'general'];
+  const p = (newPriority || '').toLowerCase();
+  const mapped = p === 'critical' ? 'emergency' : p === 'urgent' ? 'senior' : p === 'routine' ? 'general' : p;
+  if (!valid.includes(mapped)) {
+    throw new Error(`Invalid priority. Must be one of: ${valid.join(', ')}`);
+  }
+
+  const token = await Token.findByIdAndUpdate(id, { priority: mapped }, { new: true });
+  if (!token) throw new Error('Token not found');
+
   await emitQueueUpdate();
   return token;
 };

@@ -92,12 +92,24 @@ router.get('/:id', asyncHandler(async (req, res) => {
  * Search & filter doctors
  */
 router.get('/', asyncHandler(async (req, res) => {
-  const { specialty, feeMax } = req.query;
+  const { specialty, feeMax, hospitalId, search } = req.query;
   const query = { isActive: true };
   if (specialty) query.specialty = new RegExp(`^${specialty}$`, 'i');
   if (feeMax) query.consultationFee = { $lte: Number(feeMax) };
+  if (hospitalId) query.hospitalId = hospitalId;
+  if (search && search.trim()) {
+    const s = search.trim();
+    query.$or = [
+      { doctorName: new RegExp(s, 'i') },
+      { specialty: new RegExp(s, 'i') },
+      { hospitalName: new RegExp(s, 'i') },
+    ];
+  }
 
-  const doctors = await DoctorProfile.find(query).lean();
+  const doctorFields =
+    'doctorName specialty qualifications experienceYears hospitalName hospitalId consultationFee followUpFee avgRating ratingCount location videoEnabled isAvailableToday isActive slotDuration';
+
+  const doctors = await DoctorProfile.find(query).select(doctorFields).lean();
   res.json({
     success: true,
     count: doctors.length,

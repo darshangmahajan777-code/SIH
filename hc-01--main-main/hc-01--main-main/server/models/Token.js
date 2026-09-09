@@ -24,8 +24,46 @@ const tokenSchema = new mongoose.Schema({
   },
   priority: {
     type: String,
-    enum: ['emergency', 'senior', 'general'],
-    default: 'general',
+    enum: ['critical', 'urgent', 'routine', 'emergency', 'senior', 'general'],
+    default: 'routine',
+  },
+  priorityScore: {
+    type: Number,
+    min: 0,
+    max: 100,
+    default: 25,
+  },
+  priorityReason: {
+    type: String,
+    trim: true,
+    default: 'Standard queue order',
+  },
+  priorityConfidence: {
+    type: Number,
+    min: 0,
+    max: 1,
+    default: 0.9,
+  },
+  decisionSource: {
+    type: String,
+    enum: ['ai_cds', 'clinician_override', 'triage_rule', 'manual'],
+    default: 'triage_rule',
+  },
+  isOverridden: {
+    type: Boolean,
+    default: false,
+  },
+  overriddenBy: {
+    type: String,
+    default: null,
+  },
+  overrideReason: {
+    type: String,
+    default: null,
+  },
+  cdsDisclaimer: {
+    type: String,
+    default: 'Clinical Decision Support (CDS) recommendation. Not an autonomous medical diagnosis. Physician oversight required.',
   },
   status: {
     type: String,

@@ -24,11 +24,14 @@ const handleRecommendations = async (req, res) => {
     query.specialty = new RegExp(`^${criteria.specialty}$`, 'i');
   }
 
-  let doctors = await DoctorProfile.find(query).lean();
+  const doctorFields =
+    'doctorName specialty qualifications experienceYears hospitalName hospitalId consultationFee followUpFee avgRating ratingCount location videoEnabled isAvailableToday isActive';
+
+  let doctors = await DoctorProfile.find(query).select(doctorFields).lean();
 
   // If specialty filter yielded 0 doctors, expand to all active doctors for recommendations
   if (doctors.length === 0 && criteria.specialty) {
-    doctors = await DoctorProfile.find({ isActive: true }).lean();
+    doctors = await DoctorProfile.find({ isActive: true }).select(doctorFields).lean();
   }
 
   const result = await getDoctorRecommendations({ doctors, criteria });

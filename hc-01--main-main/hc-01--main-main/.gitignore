@@ -1,29 +1,51 @@
 # Dependencies
 node_modules/
+**/node_modules/
+
+# Environment and Secrets (NEVER commit secrets)
 .env
+.env.local
+.env.*.local
+*.env
+!.env.example
+!**/.env.example
+*.pem
+*.key
+credentials*.json
 
 # Logs
+logs/
+**/logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 
-# Runtime data
+# Runtime data & Process IDs
 pids
 *.pid
 *.seed
 *.pid.lock
 
-# Coverage directory used by tools like istanbul
+# Test Coverage
 coverage/
+**/coverage/
+.nyc_output
 
 # Build outputs
 dist/
+**/dist/
 build/
+**/build/
 .client/
 
-# Python
+# TypeScript & Compiler caches
+*.tsbuildinfo
+
+# Python Virtual Environments & Caches
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *$py.class
 *.so
@@ -31,11 +53,39 @@ __pycache__/
 env/
 venv/
 .venv/
+pip-log.txt
 
-# FastAPI / AI
+# Local Database files
 *.db
+*.sqlite
+*.sqlite3
+hospital-data/
+mongodb_data/
 
-# OS
+# Uploaded Private Medical Files & Attachments
+uploads/
+**/uploads/*
+!**/uploads/.gitkeep
+
+# Temporary & Scratch Files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+*.swo
+scratch/
+
+# IDE & Editor Files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS Generated Files
 .DS_Store
 Thumbs.db
-
+desktop.ini

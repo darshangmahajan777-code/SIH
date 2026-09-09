@@ -39,8 +39,10 @@ const ratingSchema = new mongoose.Schema(
   }
 );
 
-// Compound index for querying doctor reviews
+// Compound indexes for querying reviews
 ratingSchema.index({ doctorId: 1, createdAt: -1 });
+ratingSchema.index({ doctorId: 1, rating: -1 });
+ratingSchema.index({ patientId: 1, createdAt: -1 });
 
 const Rating = mongoose.models.Rating || mongoose.model('Rating', ratingSchema);
 export default Rating;
