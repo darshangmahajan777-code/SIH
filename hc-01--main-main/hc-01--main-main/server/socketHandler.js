@@ -37,6 +37,103 @@ export function emitNotificationToUser(recipientId, notification, unreadCount) {
   }
 }
 
+/**
+ * Emit Real-Time Doctor Availability Update to Reception & Organization
+ */
+export function emitDoctorAvailabilityUpdate({
+  doctorId,
+  doctorName,
+  specialty,
+  availabilityStatus,
+  isAvailableToday,
+  hospitalId,
+}) {
+  const io = getIO();
+  if (!io) return;
+  const payload = {
+    doctorId,
+    doctorName,
+    specialty,
+    availabilityStatus,
+    isAvailableToday: isAvailableToday ?? (availabilityStatus === 'available'),
+    hospitalId: hospitalId || null,
+    timestamp: new Date().toISOString(),
+  };
+
+  io.to('queue-room').emit('doctor:availability_updated', payload);
+  io.to('reception-room').emit('doctor:availability_updated', payload);
+  if (hospitalId) {
+    io.to(`hospital-room:${hospitalId}`).emit('doctor:availability_updated', payload);
+    io.to(`reception-room:${hospitalId}`).emit('doctor:availability_updated', payload);
+  }
+}
+
+/**
+ * Emit Real-Time Patient Check-In Event from Reception to Doctor & Queue
+ */
+export function emitOperationalPatientCheckIn({
+  appointmentId,
+  patientName,
+  tokenNumber,
+  doctorId,
+  slotTime,
+  hospitalId,
+}) {
+  const io = getIO();
+  if (!io) return;
+  const payload = {
+    appointmentId,
+    patientName,
+    tokenNumber,
+    doctorId,
+    slotTime,
+    hospitalId: hospitalId || null,
+    status: 'checked-in',
+    checkInTime: new Date().toISOString(),
+  };
+
+  io.to('queue-room').emit('patient_checked_in', payload);
+  io.to('reception-room').emit('patient_checked_in', payload);
+  if (doctorId) {
+    io.to(`doctor-room:${doctorId}`).emit('patient_checked_in', payload);
+  }
+  if (hospitalId) {
+    io.to(`hospital-room:${hospitalId}`).emit('patient_checked_in', payload);
+  }
+}
+
+/**
+ * Emit Real-Time Appointment Booked Event
+ */
+export function emitOperationalAppointmentBooked({
+  appointmentId,
+  patientName,
+  doctorId,
+  slotTime,
+  hospitalId,
+  mode,
+}) {
+  const io = getIO();
+  if (!io) return;
+  const payload = {
+    appointmentId,
+    patientName,
+    doctorId,
+    slotTime,
+    mode: mode || 'in-person',
+    hospitalId: hospitalId || null,
+    timestamp: new Date().toISOString(),
+  };
+
+  io.to('queue-room').emit('appointment_booked', payload);
+  if (doctorId) {
+    io.to(`doctor-room:${doctorId}`).emit('appointment_booked', payload);
+  }
+  if (hospitalId) {
+    io.to(`hospital-room:${hospitalId}`).emit('appointment_booked', payload);
+  }
+}
+
 export default function socketHandler(io, socket) {
   ioInstance = io;
 
@@ -69,7 +166,13 @@ export default function socketHandler(io, socket) {
     }
 
     const publicRooms = ['queue-room', 'display-room', 'reception-room'];
-    if (publicRooms.includes(sanitizedRoom)) {
+    if (
+      publicRooms.includes(sanitizedRoom) ||
+      sanitizedRoom.startsWith('hospital-room:') ||
+      sanitizedRoom.startsWith('hospital:') ||
+      sanitizedRoom.startsWith('reception-room:') ||
+      sanitizedRoom.startsWith('org:')
+    ) {
       socket.join(sanitizedRoom);
       return;
     }

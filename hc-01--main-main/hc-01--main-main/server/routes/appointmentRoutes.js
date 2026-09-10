@@ -42,6 +42,20 @@ router.post('/', asyncHandler(async (req, res) => {
     chiefComplaint,
   });
 
+  try {
+    const { emitOperationalAppointmentBooked } = await import('../socketHandler.js');
+    emitOperationalAppointmentBooked({
+      appointmentId: appointment._id,
+      patientName: appointment.patientId?.name || 'Patient',
+      doctorId: appointment.doctorId?._id || appointment.doctorId,
+      slotTime: appointment.slotTime,
+      mode: appointment.mode,
+      hospitalId: appointment.hospitalId,
+    });
+  } catch (sockErr) {
+    console.warn('Socket booking emit skipped:', sockErr.message);
+  }
+
   res.status(201).json({
     success: true,
     message: 'Appointment booked successfully',
@@ -56,6 +70,20 @@ router.post('/', asyncHandler(async (req, res) => {
 router.patch('/:id/check-in', asyncHandler(async (req, res) => {
   const { id } = req.params;
   const appointment = await checkInAppointment(id);
+
+  try {
+    const { emitOperationalPatientCheckIn } = await import('../socketHandler.js');
+    emitOperationalPatientCheckIn({
+      appointmentId: appointment._id,
+      patientName: appointment.patientId?.name || 'Patient',
+      tokenNumber: appointment.tokenId?.tokenNumber || appointment.tokenId,
+      doctorId: appointment.doctorId?._id || appointment.doctorId,
+      slotTime: appointment.slotTime,
+      hospitalId: appointment.hospitalId,
+    });
+  } catch (sockErr) {
+    console.warn('Socket check-in emit skipped:', sockErr.message);
+  }
 
   res.json({
     success: true,

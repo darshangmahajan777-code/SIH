@@ -74,6 +74,12 @@ const tokenSchema = new mongoose.Schema({
     type: String,
     default: 'OPD',
   },
+  hospitalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    default: null,
+    index: true,
+  },
   isEmergency: {
     type: Boolean,
     default: false,

@@ -40,6 +40,12 @@ const medicalHistorySchema = new mongoose.Schema(
       maxlength: [2000, "Notes cannot exceed 2000 characters"],
       default: "",
     },
+    category: {
+      type: String,
+      enum: ["illness", "diagnosis", "surgery", "chronic_condition", "allergy", "general"],
+      default: "diagnosis",
+      index: true,
+    },
     source: {
       type: String,
       enum: {

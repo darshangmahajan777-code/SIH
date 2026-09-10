@@ -12,26 +12,41 @@ import {
   getHospitalDoctors,
   getHospitalAppointments,
   getHospitalStats,
+  getHospitalStaff,
+  createHospitalStaff,
+  getHospitalPublicQueue,
+  addHospitalReview,
 } from '../services/hospitalService.js';
 
 const router = express.Router();
 
 /**
  * GET /api/hospitals
- * Public & Admin directory of verified hospitals with search and filters
+ * Public & Admin directory of verified hospitals and clinics with multi-organization filters
  */
 router.get(
   '/',
   asyncHandler(async (req, res) => {
-    const { query, department, status, city, limit, skip } = req.query;
-    const result = await listHospitals({ query, department, status, city, limit, skip });
+    const { query, department, status, city, type, service, availabilityStatus, sortBy, limit, skip } = req.query;
+    const result = await listHospitals({
+      query,
+      department,
+      status,
+      city,
+      type,
+      service,
+      availabilityStatus,
+      sortBy,
+      limit,
+      skip,
+    });
     res.json({ success: true, data: result.hospitals, count: result.count });
   })
 );
 
 /**
  * POST /api/hospitals
- * Register a new hospital
+ * Register a new hospital or small clinic
  */
 router.post(
   '/',
@@ -39,7 +54,7 @@ router.post(
     const hospital = await createHospital(req.body);
     res.status(201).json({
       success: true,
-      message: 'Hospital registered successfully',
+      message: `${hospital.type === 'clinic' ? 'Clinic' : 'Hospital'} registered successfully`,
       data: hospital,
     });
   })
@@ -47,13 +62,47 @@ router.post(
 
 /**
  * GET /api/hospitals/:id
- * Hospital details by ID
+ * Hospital / Clinic details by ID
  */
 router.get(
   '/:id',
   asyncHandler(async (req, res) => {
     const hospital = await getHospitalById(req.params.id);
     res.json({ success: true, data: hospital });
+  })
+);
+
+/**
+ * GET /api/hospitals/:id/queue-summary
+ * Public real-time waiting queue status without revealing private patient clinical data
+ */
+router.get(
+  '/:id/queue-summary',
+  asyncHandler(async (req, res) => {
+    const summary = await getHospitalPublicQueue(req.params.id);
+    res.json({ success: true, data: summary });
+  })
+);
+
+/**
+ * POST /api/hospitals/:id/reviews
+ * Submit patient rating & review for hospital/clinic
+ */
+router.post(
+  '/:id/reviews',
+  asyncHandler(async (req, res) => {
+    const { rating, comment, patientName } = req.body;
+    const hospital = await addHospitalReview({
+      hospitalId: req.params.id,
+      patientName: patientName || req.user?.name || 'Verified Patient',
+      rating,
+      comment,
+    });
+    res.status(201).json({
+      success: true,
+      message: 'Review recorded successfully',
+      data: hospital,
+    });
   })
 );
 
@@ -193,6 +242,34 @@ router.get(
   asyncHandler(async (req, res) => {
     const stats = await getHospitalStats(req.params.id);
     res.json({ success: true, data: stats });
+  })
+);
+
+/**
+ * GET /api/hospitals/:id/staff
+ * List all reception staff assigned to this hospital/clinic
+ */
+router.get(
+  '/:id/staff',
+  asyncHandler(async (req, res) => {
+    const staff = await getHospitalStaff(req.params.id);
+    res.json({ success: true, count: staff.length, data: staff });
+  })
+);
+
+/**
+ * POST /api/hospitals/:id/staff
+ * Onboard / add a reception staff member to this hospital/clinic
+ */
+router.post(
+  '/:id/staff',
+  asyncHandler(async (req, res) => {
+    const staff = await createHospitalStaff(req.params.id, req.body);
+    res.status(201).json({
+      success: true,
+      message: 'Staff member added successfully',
+      data: staff,
+    });
   })
 );
 

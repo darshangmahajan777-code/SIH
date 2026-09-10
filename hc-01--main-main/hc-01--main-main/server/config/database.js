@@ -6,7 +6,9 @@ dotenv.config();
 const connectDB = async () => {
   const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/hospital-queue';
   try {
-    const conn = await mongoose.connect(mongoUri);
+    const conn = await mongoose.connect(mongoUri, {
+      serverSelectionTimeoutMS: 2000,
+    });
     console.log(`MongoDB Connected: ${conn.connection.host}`);
     return conn;
   } catch (error) {

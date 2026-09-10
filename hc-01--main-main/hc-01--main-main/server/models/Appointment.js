@@ -55,6 +55,42 @@ const appointmentSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    symptoms: {
+      type: [String],
+      default: [],
+    },
+    duration: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    vitals: {
+      bp: { type: String, default: '' },
+      heartRate: { type: Number, default: null },
+      temperature: { type: String, default: '' },
+      spO2: { type: String, default: '' },
+      respiratoryRate: { type: Number, default: null },
+    },
+    currentObservations: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    clinicalNotes: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    diagnosis: {
+      type: String,
+      trim: true,
+      default: '',
+    },
+    treatment: {
+      type: String,
+      trim: true,
+      default: '',
+    },
     cancellationReason: {
       type: String,
       trim: true,

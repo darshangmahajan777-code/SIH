@@ -13,6 +13,7 @@ import CarePlan from '../models/CarePlan.js';
 import AccessGrant from '../models/AccessGrant.js';
 import Notification from '../models/Notification.js';
 import Hospital from '../models/Hospital.js';
+import { hashPassword } from '../services/authService.js';
 
 dotenv.config();
 
@@ -135,11 +136,13 @@ export async function seedSihDemoData() {
   ]);
 
   // 3. Demo User Accounts (Synthetic credentials: password 'demo123')
+  const demoPasswordHash = hashPassword('demo123');
   const users = await User.insertMany([
     {
       _id: SIH_DEMO_IDS.patientId,
       name: 'Rahul Sharma (Demo Patient)',
       email: 'patient.demo@mediqueue.test',
+      passwordHash: demoPasswordHash,
       phone: '+91-9876543210',
       role: 'patient',
       age: 32,
@@ -154,6 +157,7 @@ export async function seedSihDemoData() {
       _id: SIH_DEMO_IDS.doctorAUserId,
       name: 'Dr. Priya Sharma (Demo Doctor A)',
       email: 'dr.priya@mediqueue.test',
+      passwordHash: demoPasswordHash,
       phone: '+91-9123456789',
       role: 'doctor',
       hospitalId: SIH_DEMO_IDS.hospitalAIIMS,
@@ -162,6 +166,7 @@ export async function seedSihDemoData() {
       _id: SIH_DEMO_IDS.doctorBUserId,
       name: 'Dr. Rajesh Kumar (Demo Doctor B)',
       email: 'dr.rajesh@mediqueue.test',
+      passwordHash: demoPasswordHash,
       phone: '+91-9123456780',
       role: 'doctor',
       hospitalId: SIH_DEMO_IDS.hospitalSafdarjung,
@@ -170,6 +175,7 @@ export async function seedSihDemoData() {
       _id: SIH_DEMO_IDS.doctorCUserId,
       name: 'Dr. Ananya Sen (Pediatrics)',
       email: 'dr.ananya@mediqueue.test',
+      passwordHash: demoPasswordHash,
       phone: '+91-9123456781',
       role: 'doctor',
       hospitalId: SIH_DEMO_IDS.hospitalSafdarjung,
@@ -178,6 +184,7 @@ export async function seedSihDemoData() {
       _id: SIH_DEMO_IDS.receptionistId,
       name: 'Suman Verma (Demo Receptionist)',
       email: 'reception.demo@mediqueue.test',
+      passwordHash: demoPasswordHash,
       phone: '+91-9811122233',
       role: 'receptionist',
       hospitalId: SIH_DEMO_IDS.hospitalAIIMS,
@@ -186,6 +193,7 @@ export async function seedSihDemoData() {
       _id: SIH_DEMO_IDS.adminId,
       name: 'Amit Joshi (Demo Hospital Admin)',
       email: 'admin.demo@mediqueue.test',
+      passwordHash: demoPasswordHash,
       phone: '+91-9844455566',
       role: 'hospital_admin',
       hospitalId: SIH_DEMO_IDS.hospitalAIIMS,

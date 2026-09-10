@@ -133,9 +133,77 @@ const doctorProfileSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    medicalLicenseNumber: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    services: {
+      type: [String],
+      default: ['General Consultation'],
+    },
+    consultationModes: {
+      type: [String],
+      default: ['in-person'],
+    },
+    clinicDetails: {
+      clinicName: { type: String, default: '' },
+      registrationNumber: { type: String, default: '' },
+      contactPhone: { type: String, default: '' },
+      taxId: { type: String, default: '' },
+      website: { type: String, default: '' },
+    },
+    subscription: {
+      plan: {
+        type: String,
+        enum: ['starter', 'professional', 'enterprise', 'free_trial'],
+        default: 'professional',
+      },
+      status: {
+        type: String,
+        enum: ['active', 'trialing', 'past_due', 'cancelled'],
+        default: 'active',
+      },
+      validUntil: {
+        type: Date,
+        default: () => new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      },
+      maxStaffSeats: {
+        type: Number,
+        default: 5,
+      },
+      telemedicineEnabled: {
+        type: Boolean,
+        default: true,
+      },
+      analyticsEnabled: {
+        type: Boolean,
+        default: true,
+      },
+      aiAssistantEnabled: {
+        type: Boolean,
+        default: true,
+      },
+    },
+    staffMembers: [
+      {
+        userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        name: { type: String, default: '' },
+        role: { type: String, enum: ['receptionist', 'nurse', 'clinic_manager', 'staff'], default: 'receptionist' },
+        email: { type: String, default: '' },
+        phone: { type: String, default: '' },
+        addedAt: { type: Date, default: Date.now },
+      },
+    ],
     isAvailableToday: {
       type: Boolean,
       default: true,
+    },
+    availabilityStatus: {
+      type: String,
+      enum: ['available', 'busy', 'on_leave', 'offline'],
+      default: 'available',
+      index: true,
     },
     isActive: {
       type: Boolean,

@@ -71,6 +71,15 @@ MediQueue+ uses a modular microservices architecture designed for resilience and
    - Condition-based specialty detection and Haversine geospatial proximity routing across regional emergency centers.
 8. **Original HC-01 Kiosk Compatibility**:
    - Complete backward compatibility with walk-in reception tokens, physical ticket generation, and TV display waiting boards.
+9. **Patient & Doctor/Business Onboarding & Role-Based Routing**:
+   - Distinct dual-entry portal: Patient / User vs Doctor / Business.
+   - Patient onboarding with health vitals, blood group, allergies, and live BMI.
+   - Doctor/Business onboarding with specialty, qualifications, license number, consultation fees, clinic details, services, modes, and working schedule.
+   - Cryptographic scrypt password hashing and HMAC-SHA256 JWT sessions.
+10. **Doctor / Business Dashboard & Practice Suite**:
+   - Integrated practice dashboard aggregating today's appointments, today's patients, current queue, waiting patients, completed consultations, upcoming appointments, notifications, and subscription status.
+   - 11 quick actions: Appointments, Queue, Patients, Prescription, Lab Reports, Care Plans, Telemedicine, Staff, Analytics, Business Settings, Subscription.
+   - Seamless continuity with the existing queue and Socket.IO engine.
 
 ---
 
@@ -219,6 +228,9 @@ python -m py_compile main.py
 ## 🌐 8. Cloud Deployment Overview
 
 Detailed step-by-step production runbooks are provided in the `/docs` directory:
+- [Doctor / Business Dashboard Architecture](docs/DOCTOR_BUSINESS_DASHBOARD.md)
+- [Patient & Doctor/Business Onboarding & Auth](docs/AUTHENTICATION_AND_ONBOARDING.md)
+- [Doctor / Business Platform Audit](docs/DOCTOR_BUSINESS_AUDIT.md)
 - [Docker Production Deployment](docs/DOCKER_DEPLOYMENT.md)
 - [Production Configuration & Environment Variables](docs/PRODUCTION_CONFIGURATION.md)
 - [Deployment Readiness Audit](docs/DEPLOYMENT_READINESS.md)
@@ -234,15 +246,16 @@ Detailed step-by-step production runbooks are provided in the `/docs` directory:
 
 ## 👥 9. Safe Demo Accounts & Roles
 
-The seeded demonstration environment provides the following pre-configured personas:
+The seeded demonstration environment provides the following pre-configured personas (Synthetic password for all demo accounts: `demo123`):
 
-| Role | Name | Identifier | Primary Capabilities |
-|---|---|---|---|
-| **Patient** | Rohan Sharma | `patient_rohan_001` | Books appointments, tracks virtual queue ETA, grants consent, views care plans & prescriptions. |
-| **Doctor (Cardiology)**| Dr. Priya Sharma | `doctor_priya_001` | Manages consultation queue, inspects verified records, issues prescriptions & care plans. |
-| **Doctor (Orthopedics)**| Dr. Rajesh Kumar | `doctor_rajesh_002`| Conducts cross-specialty consultations upon receiving authorized patient consent. |
-| **Hospital Admin** | Metro Health Admin | `admin_metro_001` | Hospital-wide oversight, doctor scheduling, and departmental analytics. |
-| **Kiosk / Reception** | Reception Desk | Kiosk mode | Issues physical tickets, registers walk-in patients, manages TV display boards. |
+| Role | Name | Email (Login ID) | Synthetic Password | Primary Capabilities |
+|---|---|---|---|---|
+| **Patient** | Rahul Sharma | `patient.demo@mediqueue.test` | `demo123` | Patient hub, appointment tracking, queue ETA, vitals, consent management. |
+| **Doctor (Cardiology)**| Dr. Priya Sharma | `dr.priya@mediqueue.test` | `demo123` | Doctor workspace, clinical queue caller, prescriptions, lab orders, telemedicine. |
+| **Doctor (Orthopedics)**| Dr. Rajesh Kumar | `dr.rajesh@mediqueue.test` | `demo123` | Specialized orthopedic clinical consultations and cross-hospital care. |
+| **Doctor (Pediatrics)** | Dr. Ananya Sen | `dr.ananya@mediqueue.test` | `demo123` | Pediatric clinical practice and telemedicine sessions. |
+| **Receptionist** | Suman Verma | `reception.demo@mediqueue.test` | `demo123` | Walk-in OPD token dispatch, queue management, physical ticket printing. |
+| **Hospital Admin** | Amit Joshi | `admin.demo@mediqueue.test` | `demo123` | Hospital-wide oversight, doctor scheduling, and multi-hospital management. |
 
 ---
 

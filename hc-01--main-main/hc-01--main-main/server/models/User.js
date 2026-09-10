@@ -22,9 +22,13 @@ const userSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ['patient', 'doctor', 'receptionist', 'hospital_admin', 'admin'],
+      enum: ['patient', 'doctor', 'receptionist', 'hospital_admin', 'admin', 'clinic_manager', 'nurse'],
       default: 'patient',
       required: true,
+    },
+    permissions: {
+      type: [String],
+      default: [],
     },
     hospitalId: {
       type: mongoose.Schema.Types.ObjectId,

@@ -89,6 +89,9 @@ test('MEDIQUEUE+ SIH COMPLETE STORY & CRITICAL DEMO VERIFICATION', async (t) => 
   await t.test('PHASE 2: Doctor Search, Recommendations & Booking (Steps 3–7)', async () => {
     const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][new Date().getDay()];
 
+    const targetDateStr = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+    const dayOfWeekTarget = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][new Date(Date.now() + 86400000).getDay()];
+
     // Step 3 & 4: Doctor Search & AI / Bayesian Recommendations
     const candidates = [
       {
@@ -105,7 +108,8 @@ test('MEDIQUEUE+ SIH COMPLETE STORY & CRITICAL DEMO VERIFICATION', async (t) => 
         videoEnabled: true,
         isAvailableToday: true,
         weeklySchedule: [
-          { day: dayOfWeek, isWorking: true, startTime: '08:00', endTime: '23:30', slotDuration: 30 },
+          { day: dayOfWeek, isWorking: true, startTime: '09:00', endTime: '18:00', slotDuration: 30 },
+          { day: dayOfWeekTarget, isWorking: true, startTime: '09:00', endTime: '18:00', slotDuration: 30 },
         ],
       },
       {
@@ -122,7 +126,8 @@ test('MEDIQUEUE+ SIH COMPLETE STORY & CRITICAL DEMO VERIFICATION', async (t) => 
         videoEnabled: false,
         isAvailableToday: true,
         weeklySchedule: [
-          { day: dayOfWeek, isWorking: true, startTime: '08:00', endTime: '23:30', slotDuration: 30 },
+          { day: dayOfWeek, isWorking: true, startTime: '09:00', endTime: '18:00', slotDuration: 30 },
+          { day: dayOfWeekTarget, isWorking: true, startTime: '09:00', endTime: '18:00', slotDuration: 30 },
         ],
       },
     ];
@@ -147,7 +152,7 @@ test('MEDIQUEUE+ SIH COMPLETE STORY & CRITICAL DEMO VERIFICATION', async (t) => 
     // Step 5 & 6: View daily slots
     const avail = await getDoctorAvailability(
       demoState.doctorAProfileId,
-      demoState.todayStr,
+      targetDateStr,
       candidates[0],
       []
     );

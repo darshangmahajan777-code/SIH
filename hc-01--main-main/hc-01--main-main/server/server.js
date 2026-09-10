@@ -24,10 +24,16 @@ import notificationRoutes from './routes/notificationRoutes.js';
 import patientRoutes from './routes/patientRoutes.js';
 import hospitalRoutes from './routes/hospitalRoutes.js';
 import aiRoutes from './routes/aiRoutes.js';
+import authRoutes from './routes/authRoutes.js';
+import receptionRoutes from './routes/receptionRoutes.js';
+import { optionalAuth } from './middleware/auth.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
 
 dotenv.config();
+
+// Prevent queries from buffering/hanging when MongoDB is disconnected
+mongoose.set('bufferCommands', false);
 
 const app = express();
 const server = http.createServer(app);
@@ -93,6 +99,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '1mb' }));
 app.use(apiLimiter);
+app.use(optionalAuth);
 
 // ── Health Endpoints (GET /health and GET /api/health) ──
 const healthHandler = (req, res) => {
@@ -112,6 +119,7 @@ app.get('/health', healthHandler);
 app.get('/api/health', healthHandler);
 
 // ── Routes ──
+app.use('/api/auth', authRoutes);
 app.use('/api/tokens', tokenRoutes);
 app.use('/api/doctor', doctorRoutes);
 app.use('/api/summary', summaryRoutes);
@@ -130,6 +138,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/patient', patientRoutes);
 app.use('/api/hospitals', hospitalRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/reception', receptionRoutes);
 
 // ── Error Handling ──
 app.use(notFoundHandler);

@@ -15,14 +15,16 @@ const router = express.Router();
 
 // POST /api/tokens — Create a new token
 router.post('/', tokenCreationLimiter, validateCreateToken, asyncHandler(async (req, res) => {
-  const { patientName, age, condition, priority, department } = req.body;
-  const token = await generateToken({ patientName, age, condition, priority, department });
+  const { patientName, age, condition, priority, department, hospitalId } = req.body;
+  const effectiveHospitalId = hospitalId || req.user?.hospitalId || null;
+  const token = await generateToken({ patientName, age, condition, priority, department, hospitalId: effectiveHospitalId });
   res.status(201).json({ success: true, data: token });
 }));
 
 // GET /api/tokens — Get current queue
 router.get('/', asyncHandler(async (req, res) => {
-  const queue = await getQueue();
+  const hospitalId = req.query.hospitalId || null;
+  const queue = await getQueue({ hospitalId });
   res.status(200).json({ success: true, data: queue });
 }));
 

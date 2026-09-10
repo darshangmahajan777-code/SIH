@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Token from '../models/Token.js';
 import DailySummary from '../models/DailySummary.js';
+import { getInMemoryQueueTokens } from './queueService.js';
 
 let inMemoryTokens = [];
 
@@ -14,6 +15,15 @@ export function seedSummaryTestDb(tokens = []) {
 
 const today = () => new Date().toISOString().split('T')[0];
 
+const getSourceTokens = () => {
+  if (inMemoryTokens.length > 0) return inMemoryTokens;
+  try {
+    return getInMemoryQueueTokens ? getInMemoryQueueTokens() : [];
+  } catch (err) {
+    return inMemoryTokens;
+  }
+};
+
 // ── Generate or update daily summary ──
 export const generateDailySummary = async (date) => {
   const targetDate = date || today();
@@ -22,7 +32,7 @@ export const generateDailySummary = async (date) => {
   if (mongoose.connection.readyState === 1) {
     tokens = await Token.find({ sessionDate: targetDate }).lean();
   } else {
-    tokens = inMemoryTokens.filter((t) => t.sessionDate === targetDate);
+    tokens = getSourceTokens().filter((t) => t.sessionDate === targetDate);
   }
 
   if (tokens.length === 0) {
@@ -145,7 +155,7 @@ export const getLiveStats = async () => {
   if (mongoose.connection.readyState === 1) {
     tokens = await Token.find({ sessionDate: targetDate }).lean();
   } else {
-    tokens = inMemoryTokens.filter((t) => t.sessionDate === targetDate);
+    tokens = getSourceTokens().filter((t) => t.sessionDate === targetDate);
   }
   const waiting = tokens.filter(t => t.status === 'waiting').length;
   const inProgress = tokens.filter(t => t.status === 'in-progress').length;

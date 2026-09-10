@@ -117,7 +117,20 @@ export const getDoctorAvailability = async (
   preloadedDoctor = null,
   preloadedAppointments = null
 ) => {
-  const doctor = preloadedDoctor || (await DoctorProfile.findById(doctorId).lean());
+  let doctor = preloadedDoctor;
+  if (!doctor) {
+    if (mongoose.connection.readyState === 1) {
+      doctor = await DoctorProfile.findById(doctorId).lean();
+    } else {
+      try {
+        const { getInMemoryDoctorProfiles } = await import('./authService.js');
+        const allDocs = getInMemoryDoctorProfiles ? getInMemoryDoctorProfiles() : [];
+        doctor = allDocs.find((d) => d._id?.toString() === doctorId?.toString()) || null;
+      } catch (err) {
+        doctor = null;
+      }
+    }
+  }
   if (!doctor) {
     throw new AppError('Doctor not found', 404);
   }
@@ -240,18 +253,38 @@ export const getDailyListing = async ({ dateStr, specialty, maxFee }) => {
     query.consultationFee = { $lte: Number(maxFee) };
   }
 
-  const doctors = await DoctorProfile.find(query).lean();
-  if (!doctors.length) return [];
+  let doctors = [];
+  let appointments = [];
 
-  // Batch query all appointments for candidate doctors on dateStr (Eliminates N+1 query pattern)
-  const doctorIds = doctors.map((d) => d._id);
-  const appointments = await Appointment.find({
-    doctorId: { $in: doctorIds },
-    date: dateStr,
-    status: { $ne: 'cancelled' },
-  })
-    .select('doctorId slotTime status')
-    .lean();
+  if (mongoose.connection.readyState === 1) {
+    doctors = await DoctorProfile.find(query).lean();
+    if (!doctors.length) return [];
+
+    // Batch query all appointments for candidate doctors on dateStr (Eliminates N+1 query pattern)
+    const doctorIds = doctors.map((d) => d._id);
+    appointments = await Appointment.find({
+      doctorId: { $in: doctorIds },
+      date: dateStr,
+      status: { $ne: 'cancelled' },
+    })
+      .select('doctorId slotTime status')
+      .lean();
+  } else {
+    try {
+      const { getInMemoryDoctorProfiles } = await import('./authService.js');
+      const allDocs = getInMemoryDoctorProfiles ? getInMemoryDoctorProfiles() : [];
+      doctors = allDocs.filter((d) => d.isActive !== false);
+      if (specialty) {
+        doctors = doctors.filter((d) => d.specialty?.toLowerCase() === specialty.toLowerCase());
+      }
+      if (maxFee) {
+        doctors = doctors.filter((d) => (d.consultationFee || 0) <= Number(maxFee));
+      }
+    } catch (err) {
+      doctors = [];
+    }
+    if (!doctors.length) return [];
+  }
 
   // Group appointments by doctor ID in a Map for O(1) lookup
   const appointmentsByDoctor = new Map();

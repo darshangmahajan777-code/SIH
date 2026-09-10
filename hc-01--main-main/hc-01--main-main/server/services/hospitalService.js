@@ -56,45 +56,87 @@ export function seedHospitalTestDb({
 }
 
 /**
- * Register / Create a new Hospital
+ * Register / Create a new Hospital or Small Clinic
  */
 export async function createHospital(data) {
   if (!data.name || !data.contact?.phone || !data.address?.fullAddress) {
-    throw new AppError('Hospital name, contact phone, and full address are required', 400);
+    throw new AppError('Hospital/Clinic name, contact phone, and full address are required', 400);
   }
+
+  const isClinic = data.type === 'clinic';
+  const orgType = isClinic ? 'clinic' : 'hospital';
+
+  const defaultWorkingHours = data.workingHours || {
+    openTime: '08:00',
+    closeTime: isClinic ? '18:00' : '20:00',
+    days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'],
+    emergency24x7: !isClinic,
+  };
+
+  const defaultSchedules = data.appointmentSchedules || {
+    slotDurationMinutes: isClinic ? 20 : 30,
+    advanceBookingDays: 14,
+    startSlotTime: '09:00',
+    endSlotTime: isClinic ? '17:00' : '18:00',
+  };
+
+  const defaultServices = data.services || (isClinic
+    ? ['General OPD', 'Doctor Consultations', 'Preventive Care', 'Family Medicine']
+    : ['OPD Consultations', 'Diagnostics', 'Emergency Care', 'Pharmacy', 'ICU']);
 
   const isConnected = mongoose.connection.readyState === 1;
 
   if (isConnected) {
-    // Generate code if not provided (e.g. "AIIMS-DELHI" -> "AIIMS-DEL")
+    // Generate code if not provided (e.g. "CLINIC-412" or "AIIMS-DEL")
     let code = data.code;
     if (!code) {
-      const slug = data.name.replace(/[^A-Za-z0-9]/g, '').slice(0, 5).toUpperCase();
-      code = `${slug}-${Math.floor(100 + Math.random() * 900)}`;
+      const prefix = isClinic ? 'CLINIC' : data.name.replace(/[^A-Za-z0-9]/g, '').slice(0, 5).toUpperCase();
+      code = `${prefix}-${Math.floor(100 + Math.random() * 900)}`;
     }
 
     const hospital = await Hospital.create({
       ...data,
       code,
+      type: orgType,
+      workingHours: defaultWorkingHours,
+      appointmentSchedules: defaultSchedules,
+      services: defaultServices,
+      rating: data.rating !== undefined ? data.rating : 4.8,
+      reviewCount: data.reviewCount || (data.reviews ? data.reviews.length : 0),
+      reviews: data.reviews || [],
+      availabilityStatus: data.availabilityStatus || 'available',
+      isAcceptingPatients: data.isAcceptingPatients !== false,
+      totalBeds: data.totalBeds !== undefined ? data.totalBeds : (isClinic ? 0 : 200),
+      availableBeds: data.availableBeds !== undefined ? data.availableBeds : (isClinic ? 0 : 45),
       verificationStatus: data.verificationStatus || 'verified',
     });
     return hospital;
   }
 
   // In-memory fallback
+  const prefix = isClinic ? 'CLINIC' : 'HOSP';
   const newHospital = {
-    _id: data._id || 'hosp-' + (inMemoryHospitals.length + 1),
+    _id: data._id || `${isClinic ? 'clinic' : 'hosp'}-${inMemoryHospitals.length + 1}`,
     name: data.name,
-    code: data.code || `HOSP-${inMemoryHospitals.length + 1}`,
+    code: data.code || `${prefix}-${inMemoryHospitals.length + 1}`,
+    type: orgType,
     address: data.address,
     location: data.location || { lat: 28.6139, lng: 77.2090 },
     contact: data.contact,
-    departments: data.departments || ['OPD', 'Emergency', 'Cardiology'],
+    departments: data.departments || (isClinic ? ['General OPD', 'Family Medicine'] : ['OPD', 'Emergency', 'Cardiology']),
+    workingHours: defaultWorkingHours,
+    appointmentSchedules: defaultSchedules,
+    services: defaultServices,
+    rating: data.rating !== undefined ? data.rating : 4.8,
+    reviewCount: data.reviewCount || (data.reviews ? data.reviews.length : 0),
+    reviews: data.reviews || [],
+    availabilityStatus: data.availabilityStatus || 'available',
+    isAcceptingPatients: data.isAcceptingPatients !== false,
     verificationStatus: data.verificationStatus || 'verified',
     isActive: data.isActive !== false,
     adminUserIds: data.adminUserIds || [],
-    totalBeds: data.totalBeds || 200,
-    availableBeds: data.availableBeds || 45,
+    totalBeds: data.totalBeds !== undefined ? data.totalBeds : (isClinic ? 0 : 200),
+    availableBeds: data.availableBeds !== undefined ? data.availableBeds : (isClinic ? 0 : 45),
     createdAt: new Date(),
   };
   inMemoryHospitals.push(newHospital);
@@ -102,30 +144,48 @@ export async function createHospital(data) {
 }
 
 /**
- * Get Hospital by ID
+ * Get Hospital or Clinic by ID
  */
 export async function getHospitalById(id) {
   const isConnected = mongoose.connection.readyState === 1;
 
   if (isConnected) {
     const hospital = await Hospital.findById(id).lean();
-    if (!hospital) throw new AppError('Hospital not found', 404);
+    if (!hospital) throw new AppError('Hospital/Clinic not found', 404);
 
-    const doctorsCount = await DoctorProfile.countDocuments({ hospitalId: id, isActive: true });
-    return { ...hospital, doctorsCount };
+    const [doctorsCount, activeDoctors] = await Promise.all([
+      DoctorProfile.countDocuments({ hospitalId: id, isActive: true }),
+      DoctorProfile.find({ hospitalId: id, isActive: true })
+        .select('doctorName specialty avgRating ratingCount consultationFee isAvailableToday')
+        .limit(10)
+        .lean(),
+    ]);
+
+    return { ...hospital, doctorsCount, doctors: activeDoctors };
   }
 
   // In-memory fallback
   const hosp = inMemoryHospitals.find((h) => h._id?.toString() === id?.toString());
-  if (!hosp) throw new AppError('Hospital not found', 404);
-  const doctorsCount = inMemoryDoctors.filter((d) => d.hospitalId?.toString() === id?.toString()).length;
-  return { ...hosp, doctorsCount };
+  if (!hosp) throw new AppError('Hospital/Clinic not found', 404);
+  const matchingDoctors = inMemoryDoctors.filter((d) => d.hospitalId?.toString() === id?.toString() && d.isActive !== false);
+  return { ...hosp, doctorsCount: matchingDoctors.length, doctors: matchingDoctors };
 }
 
 /**
- * List Hospitals with optional search and department filtering
+ * List Hospitals & Clinics with multi-organization filters
  */
-export async function listHospitals({ query = '', department = '', status = '', city = '', limit = 50, skip = 0 } = {}) {
+export async function listHospitals({
+  query = '',
+  department = '',
+  status = '',
+  city = '',
+  type = '',
+  service = '',
+  availabilityStatus = '',
+  sortBy = 'rating',
+  limit = 50,
+  skip = 0,
+} = {}) {
   const isConnected = mongoose.connection.readyState === 1;
 
   if (isConnected) {
@@ -133,16 +193,33 @@ export async function listHospitals({ query = '', department = '', status = '', 
     if (status) filter.verificationStatus = status;
     if (department) filter.departments = department;
     if (city) filter['address.city'] = new RegExp(city, 'i');
+    if (type && type !== 'all') filter.type = type;
+    if (service) filter.services = { $in: [new RegExp(service, 'i')] };
+    if (availabilityStatus) filter.availabilityStatus = availabilityStatus;
+
     if (query) {
       filter.$or = [
         { name: new RegExp(query, 'i') },
         { code: new RegExp(query, 'i') },
         { 'address.city': new RegExp(query, 'i') },
+        { 'address.fullAddress': new RegExp(query, 'i') },
+        { services: new RegExp(query, 'i') },
       ];
     }
 
+    const sortOptions = {};
+    if (sortBy === 'rating') {
+      sortOptions.rating = -1;
+      sortOptions.name = 1;
+    } else if (sortBy === 'name') {
+      sortOptions.name = 1;
+    } else {
+      sortOptions.verificationStatus = 1;
+      sortOptions.name = 1;
+    }
+
     const hospitals = await Hospital.find(filter)
-      .sort({ verificationStatus: 1, name: 1 })
+      .sort(sortOptions)
       .skip(Number(skip))
       .limit(Number(limit))
       .lean();
@@ -156,14 +233,25 @@ export async function listHospitals({ query = '', department = '', status = '', 
   if (status) list = list.filter((h) => h.verificationStatus === status);
   if (department) list = list.filter((h) => h.departments?.includes(department));
   if (city) list = list.filter((h) => h.address?.city?.toLowerCase().includes(city.toLowerCase()));
+  if (type && type !== 'all') list = list.filter((h) => (h.type || 'hospital') === type);
+  if (service) list = list.filter((h) => h.services?.some((s) => s.toLowerCase().includes(service.toLowerCase())));
+  if (availabilityStatus) list = list.filter((h) => (h.availabilityStatus || 'available') === availabilityStatus);
+
   if (query) {
     const q = query.toLowerCase();
     list = list.filter(
       (h) =>
         h.name.toLowerCase().includes(q) ||
         h.code?.toLowerCase().includes(q) ||
-        h.address?.fullAddress?.toLowerCase().includes(q)
+        h.address?.fullAddress?.toLowerCase().includes(q) ||
+        h.services?.some((s) => s.toLowerCase().includes(q))
     );
+  }
+
+  if (sortBy === 'rating') {
+    list.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+  } else if (sortBy === 'name') {
+    list.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   return { count: list.length, hospitals: list.slice(skip, skip + limit) };
@@ -467,5 +555,194 @@ export async function findOrCreateHospitalByName(hospitalName, defaultLocation =
     inMemoryHospitals.push(hosp);
   }
 
+  return hosp;
+}
+
+/**
+ * Get staff members (receptionists/nurses) assigned to this hospital/clinic
+ */
+export async function getHospitalStaff(hospitalId) {
+  const isConnected = mongoose.connection.readyState === 1;
+  if (isConnected) {
+    const staff = await User.find({
+      hospitalId,
+      role: { $in: ['receptionist', 'nurse', 'clinic_manager', 'staff'] },
+      isActive: true,
+    }).select('name email phone role hospitalId createdAt').lean();
+    return staff;
+  }
+
+  // In-memory fallback
+  try {
+    const { getInMemoryUsers } = await import('./authService.js');
+    const users = getInMemoryUsers ? getInMemoryUsers() : [];
+    return users.filter(
+      (u) =>
+        ['receptionist', 'nurse', 'clinic_manager', 'staff'].includes(u.role) &&
+        (!hospitalId || String(u.hospitalId) === String(hospitalId))
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Register / add a staff member (receptionist/nurse) to this hospital/clinic
+ */
+export async function createHospitalStaff(hospitalId, data) {
+  const { name, email, phone, role = 'receptionist', password = 'demo123' } = data;
+  if (!name || !email) {
+    throw new AppError('Name and email are required for staff registration', 400);
+  }
+
+  const isConnected = mongoose.connection.readyState === 1;
+  if (isConnected) {
+    const existing = await User.findOne({ email });
+    if (existing) {
+      existing.hospitalId = hospitalId;
+      existing.role = role;
+      await existing.save();
+      return existing;
+    }
+    const { hashPassword } = await import('./authService.js');
+    const passwordHash = hashPassword(password);
+    const user = await User.create({
+      name,
+      email,
+      phone,
+      role,
+      hospitalId,
+      passwordHash,
+      isActive: true,
+    });
+    return user;
+  }
+
+  // In-memory
+  const newUser = {
+    _id: 'user_staff_' + Date.now(),
+    name,
+    email,
+    phone,
+    role,
+    hospitalId,
+    passwordHash: password,
+    isActive: true,
+    createdAt: new Date(),
+  };
+  try {
+    const { getInMemoryUsers } = await import('./authService.js');
+    const mem = getInMemoryUsers ? getInMemoryUsers() : [];
+    mem.push(newUser);
+  } catch {}
+  return newUser;
+}
+
+/**
+ * Get Public Queue Summary for Hospital/Clinic
+ * Provides real-time token count and wait estimates without exposing other patients' health records.
+ */
+export async function getHospitalPublicQueue(hospitalId) {
+  const isConnected = mongoose.connection.readyState === 1;
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  if (isConnected) {
+    const hospital = await Hospital.findById(hospitalId).lean();
+    if (!hospital) throw new AppError('Hospital/Clinic not found', 404);
+
+    const [waitingTokens, inProgressToken, doctors] = await Promise.all([
+      Token.find({ hospitalId, sessionDate: todayStr, status: 'waiting' }).sort({ tokenNumber: 1 }).lean(),
+      Token.findOne({ hospitalId, sessionDate: todayStr, status: 'in-progress' }).lean(),
+      DoctorProfile.find({ hospitalId, isActive: true }).select('doctorName specialty isAvailableToday').lean(),
+    ]);
+
+    const activeDocs = doctors.filter((d) => d.isAvailableToday !== false);
+    const avgConsultTime = 10;
+    const estimatedWait = Math.round((waitingTokens.length * avgConsultTime) / Math.max(activeDocs.length, 1));
+
+    return {
+      hospitalId: hospital._id,
+      organizationId: hospital.code,
+      name: hospital.name,
+      type: hospital.type || 'hospital',
+      availabilityStatus: hospital.availabilityStatus || 'available',
+      isAcceptingPatients: hospital.isAcceptingPatients !== false,
+      waitingCount: waitingTokens.length,
+      currentToken: inProgressToken
+        ? inProgressToken.tokenNumber
+        : waitingTokens[0]?.tokenNumber
+        ? Math.max(1, waitingTokens[0].tokenNumber - 1)
+        : 0,
+      estimatedWaitTimeMinutes: estimatedWait,
+      activeDoctorsCount: activeDocs.length,
+    };
+  }
+
+  // In-memory fallback
+  const hosp = inMemoryHospitals.find((h) => h._id?.toString() === hospitalId?.toString());
+  if (!hosp) throw new AppError('Hospital/Clinic not found', 404);
+
+  const waitingTokens = inMemoryTokens.filter(
+    (t) => t.status === 'waiting' && (!t.hospitalId || t.hospitalId?.toString() === hospitalId?.toString())
+  );
+  const docs = inMemoryDoctors.filter((d) => d.hospitalId?.toString() === hospitalId?.toString());
+
+  return {
+    hospitalId: hosp._id,
+    organizationId: hosp.code,
+    name: hosp.name,
+    type: hosp.type || 'hospital',
+    availabilityStatus: hosp.availabilityStatus || 'available',
+    isAcceptingPatients: hosp.isAcceptingPatients !== false,
+    waitingCount: waitingTokens.length,
+    currentToken: waitingTokens.length > 0 ? 12 : 0,
+    estimatedWaitTimeMinutes: waitingTokens.length * 10,
+    activeDoctorsCount: docs.length,
+  };
+}
+
+/**
+ * Add a Patient Review & Update Aggregates for Hospital/Clinic
+ */
+export async function addHospitalReview({ hospitalId, patientName = 'Verified Patient', rating, comment = '' }) {
+  if (!rating || rating < 1 || rating > 5) {
+    throw new AppError('Rating must be between 1 and 5', 400);
+  }
+
+  const isConnected = mongoose.connection.readyState === 1;
+
+  if (isConnected) {
+    const hospital = await Hospital.findById(hospitalId);
+    if (!hospital) throw new AppError('Hospital/Clinic not found', 404);
+
+    hospital.reviews = hospital.reviews || [];
+    hospital.reviews.push({
+      patientName: patientName || 'Verified Patient',
+      rating: Number(rating),
+      comment: comment || '',
+      date: new Date(),
+    });
+
+    hospital.reviewCount = hospital.reviews.length;
+    const sum = hospital.reviews.reduce((acc, r) => acc + (r.rating || 5), 0);
+    hospital.rating = Number((sum / hospital.reviews.length).toFixed(1));
+    await hospital.save();
+    return hospital;
+  }
+
+  // In-memory fallback
+  const hosp = inMemoryHospitals.find((h) => h._id?.toString() === hospitalId?.toString());
+  if (!hosp) throw new AppError('Hospital/Clinic not found', 404);
+
+  hosp.reviews = hosp.reviews || [];
+  hosp.reviews.push({
+    patientName: patientName || 'Verified Patient',
+    rating: Number(rating),
+    comment: comment || '',
+    date: new Date(),
+  });
+  hosp.reviewCount = hosp.reviews.length;
+  const sum = hosp.reviews.reduce((acc, r) => acc + (r.rating || 5), 0);
+  hosp.rating = Number((sum / hosp.reviews.length).toFixed(1));
   return hosp;
 }

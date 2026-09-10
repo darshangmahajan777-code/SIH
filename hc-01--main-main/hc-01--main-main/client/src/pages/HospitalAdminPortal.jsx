@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import axios from 'axios';
 import {
   Building2,
@@ -187,26 +188,39 @@ const INITIAL_FALLBACK_DOCTORS = [
 ];
 
 export default function HospitalAdminPortal() {
+  const [searchParams] = useSearchParams();
   const [hospitals, setHospitals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDept, setSelectedDept] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('');
   const [activeHospital, setActiveHospital] = useState(null);
+  const [activeSubTab, setActiveSubTab] = useState('doctors'); // 'doctors' | 'staff' | 'departments' | 'analytics' | 'profile'
   const [hospitalDoctors, setHospitalDoctors] = useState([]);
+  const [hospitalStaff, setHospitalStaff] = useState([]);
   const [hospitalStats, setHospitalStats] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
 
-  // User role switcher for SIH demo: 'admin' (Platform Admin) or 'hospital_admin'
+  // Sync subtab with URL query param (e.g. ?tab=staff, ?tab=doctors)
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (tab) {
+      setActiveSubTab(tab);
+    }
+  }, [searchParams]);
+
+  // User role switcher for demo: 'admin' (Platform Admin) or 'hospital_admin'
   const [userRole, setUserRole] = useState('admin');
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showAffiliateModal, setShowAffiliateModal] = useState(false);
+  const [showStaffModal, setShowStaffModal] = useState(false);
   const [actionNotice, setActionNotice] = useState(null);
 
   // Form states
   const [newHospital, setNewHospital] = useState({
     name: '',
     code: '',
+    type: 'hospital', // 'hospital' | 'clinic'
     address: { fullAddress: '', city: 'New Delhi', state: 'Delhi', pincode: '110001' },
     contact: { phone: '', email: '', emergencyHelpline: '102' },
     departments: ['General Medicine', 'Emergency', 'OPD'],
@@ -220,6 +234,13 @@ export default function HospitalAdminPortal() {
     qualifications: 'MBBS, MD',
     experienceYears: 5,
     consultationFee: 500,
+  });
+
+  const [newStaff, setNewStaff] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    role: 'receptionist',
   });
 
   // Load Hospitals
@@ -281,9 +302,10 @@ export default function HospitalAdminPortal() {
     setLoadingDetails(true);
 
     try {
-      const [docRes, statsRes] = await Promise.allSettled([
+      const [docRes, statsRes, staffRes] = await Promise.allSettled([
         axios.get(`/api/hospitals/${hospital._id}/doctors`),
         axios.get(`/api/hospitals/${hospital._id}/stats`),
+        axios.get(`/api/hospitals/${hospital._id}/staff`),
       ]);
 
       if (docRes.status === 'fulfilled' && docRes.value.data?.doctors) {
@@ -293,6 +315,15 @@ export default function HospitalAdminPortal() {
           (d) => d.hospitalId === hospital._id || d.hospitalName === hospital.name
         );
         setHospitalDoctors(docs);
+      }
+
+      if (staffRes.status === 'fulfilled' && staffRes.value.data?.data) {
+        setHospitalStaff(staffRes.value.data.data);
+      } else {
+        setHospitalStaff([
+          { _id: 'staff-1', name: 'Suman Verma', role: 'receptionist', email: 'reception.demo@mediqueue.test', phone: '+91-9811122233' },
+          { _id: 'staff-2', name: 'Kavita Singh', role: 'nurse', email: 'nurse.demo@mediqueue.test', phone: '+91-9822211100' }
+        ]);
       }
 
       if (statsRes.status === 'fulfilled' && statsRes.value.data?.stats) {
@@ -316,6 +347,9 @@ export default function HospitalAdminPortal() {
         (d) => d.hospitalId === hospital._id || d.hospitalName === hospital.name
       );
       setHospitalDoctors(docs);
+      setHospitalStaff([
+        { _id: 'staff-1', name: 'Suman Verma', role: 'receptionist', email: 'reception.demo@mediqueue.test', phone: '+91-9811122233' }
+      ]);
       setHospitalStats({
         hospitalId: hospital._id,
         hospitalName: hospital.name,
@@ -330,6 +364,29 @@ export default function HospitalAdminPortal() {
       });
     } finally {
       setLoadingDetails(false);
+    }
+  };
+
+  // Register a new staff member (receptionist/nurse) for this hospital/clinic
+  const handleRegisterStaff = async (e) => {
+    e.preventDefault();
+    if (!activeHospital) return;
+    try {
+      const res = await axios.post(`/api/hospitals/${activeHospital._id}/staff`, newStaff);
+      if (res.data?.data) {
+        setHospitalStaff((prev) => [res.data.data, ...prev]);
+        notify(`Staff member "${newStaff.name}" registered successfully!`, 'success');
+      }
+      setShowStaffModal(false);
+      setNewStaff({ name: '', email: '', phone: '', role: 'receptionist' });
+    } catch (err) {
+      notify(err.response?.data?.message || 'Staff registered (simulated)', 'success');
+      setHospitalStaff((prev) => [
+        { _id: 'staff_' + Date.now(), ...newStaff },
+        ...prev,
+      ]);
+      setShowStaffModal(false);
+      setNewStaff({ name: '', email: '', phone: '', role: 'receptionist' });
     }
   };
 
@@ -381,25 +438,34 @@ export default function HospitalAdminPortal() {
       return;
     }
 
+    const isClinic = newHospital.type === 'clinic';
     const payload = {
       ...newHospital,
       facilities: typeof newHospital.facilities === 'string'
         ? newHospital.facilities.split(',').map((s) => s.trim())
         : newHospital.facilities,
+      services: newHospital.servicesStr
+        ? newHospital.servicesStr.split(',').map((s) => s.trim())
+        : (isClinic ? ['General OPD', 'Vaccinations', 'BP Check'] : ['OPD', 'Emergency', 'Pharmacy']),
+      workingHours: {
+        openTime: '08:00',
+        closeTime: isClinic ? '18:00' : '20:00',
+        emergency24x7: !isClinic,
+      },
     };
 
     try {
       const res = await axios.post('/api/hospitals', payload);
-      const created = res.data?.hospital || {
+      const created = res.data?.data || res.data?.hospital || {
         ...payload,
-        _id: 'hosp-' + Date.now(),
+        _id: (isClinic ? 'clinic-' : 'hosp-') + Date.now(),
         verificationStatus: 'verified',
         doctorsCount: 0,
       };
       setHospitals((prev) => [created, ...prev]);
       selectHospital(created);
       setShowRegisterModal(false);
-      notify(`Hospital "${created.name}" registered successfully!`, 'success');
+      notify(`${isClinic ? 'Clinic' : 'Hospital'} "${created.name}" registered successfully!`, 'success');
     } catch {
       const created = {
         ...payload,
@@ -815,9 +881,15 @@ export default function HospitalAdminPortal() {
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => setShowAffiliateModal(true)}
-                    className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-bold text-white shadow-md shadow-blue-500/20 hover:bg-blue-700"
+                    className="flex items-center gap-1.5 rounded-xl bg-blue-600 px-3.5 py-2 text-xs font-bold text-white shadow-md shadow-blue-500/20 hover:bg-blue-700 transition"
                   >
                     <Plus className="h-4 w-4" /> Affiliate Doctor
+                  </button>
+                  <button
+                    onClick={() => setShowStaffModal(true)}
+                    className="flex items-center gap-1.5 rounded-xl bg-amber-600 px-3.5 py-2 text-xs font-bold text-white shadow-md shadow-amber-500/20 hover:bg-amber-700 transition"
+                  >
+                    <Plus className="h-4 w-4" /> Add Reception Staff
                   </button>
                 </div>
               </div>
@@ -896,101 +968,134 @@ export default function HospitalAdminPortal() {
                 </div>
               )}
 
-              {/* Affiliated Doctors Roster */}
-              <div className="mt-8">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-base font-bold text-slate-900">
-                    Affiliated Clinical Specialists ({hospitalDoctors.length})
-                  </h3>
-                  <span className="text-xs text-slate-500">Verified doctor roster</span>
+              {/* Operational Subtabs: Specialists vs Reception Staff */}
+              <div className="mt-8 border-b border-slate-200">
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => setActiveSubTab('doctors')}
+                    className={`pb-3 text-sm font-bold transition border-b-2 ${
+                      activeSubTab === 'doctors'
+                        ? 'border-blue-600 text-blue-600'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    Affiliated Specialists ({hospitalDoctors.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveSubTab('staff')}
+                    className={`pb-3 text-sm font-bold transition border-b-2 ${
+                      activeSubTab === 'staff'
+                        ? 'border-amber-600 text-amber-600'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    Reception & Front Desk Staff ({hospitalStaff.length})
+                  </button>
                 </div>
+              </div>
 
-                {loadingDetails ? (
-                  <div className="flex h-32 items-center justify-center">
-                    <RefreshCw className="h-5 w-5 animate-spin text-blue-500" />
-                  </div>
-                ) : hospitalDoctors.length === 0 ? (
-                  <div className="mt-3 rounded-2xl border border-dashed border-slate-200 p-6 text-center">
-                    <Stethoscope className="mx-auto h-8 w-8 text-slate-300" />
-                    <p className="mt-2 text-sm font-semibold text-slate-600">
-                      No doctors affiliated yet
-                    </p>
-                    <p className="text-xs text-slate-400">
-                      Click "Affiliate Doctor" above to assign practitioners to this hospital.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="mt-3 space-y-3">
-                    {hospitalDoctors.map((doc) => {
-                      const isVerified = doc.verificationStatus === 'verified';
-
-                      return (
-                        <div
-                          key={doc._id}
-                          className="flex flex-col justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 transition-all hover:border-slate-300 sm:flex-row sm:items-center"
-                        >
-                          <div className="flex items-start gap-3">
-                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-100 text-blue-700 font-bold">
-                              {doc.doctorName?.slice(3, 5).toUpperCase() || 'DR'}
-                            </div>
-
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <h4 className="text-sm font-bold text-slate-900">
-                                  {doc.doctorName}
-                                </h4>
-                                <span
-                                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
-                                    isVerified
-                                      ? 'bg-emerald-100 text-emerald-700'
-                                      : 'bg-amber-100 text-amber-700'
-                                  }`}
-                                >
-                                  {doc.verificationStatus || 'pending'}
-                                </span>
-                              </div>
-                              <p className="text-xs font-semibold text-blue-600">
-                                {doc.specialty} • {doc.experienceYears || 5} yrs exp
-                              </p>
-                              <p className="text-[11px] text-slate-400">
-                                {doc.qualifications || 'MBBS, MD'} • ₹{doc.consultationFee || 500} fee
-                              </p>
-                            </div>
+              {/* Subtab: Doctors */}
+              {activeSubTab === 'doctors' && (
+                <div className="mt-6 space-y-3">
+                  {hospitalDoctors.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center">
+                      <Stethoscope className="mx-auto h-8 w-8 text-slate-300" />
+                      <p className="mt-2 text-sm font-semibold text-slate-600">No doctors currently affiliated.</p>
+                      <p className="text-xs text-slate-400">Click "+ Affiliate Doctor" above to register clinical specialists.</p>
+                    </div>
+                  ) : (
+                    hospitalDoctors.map((doc) => (
+                      <div
+                        key={doc._id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300"
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-blue-50 text-blue-600 font-bold text-sm">
+                            <Stethoscope className="h-5 w-5" />
                           </div>
-
-                          <div className="flex items-center gap-2 self-end sm:self-center">
-                            {userRole === 'admin' && (
-                              <>
-                                {doc.verificationStatus !== 'verified' ? (
-                                  <button
-                                    onClick={() => handleVerifyDoctor(doc._id, 'verified')}
-                                    className="flex items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700 hover:bg-emerald-100"
-                                  >
-                                    <UserCheck className="h-3.5 w-3.5" /> Verify Credential
-                                  </button>
-                                ) : (
-                                  <button
-                                    onClick={() => handleVerifyDoctor(doc._id, 'pending')}
-                                    className="rounded-lg bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-500 hover:bg-slate-100"
-                                  >
-                                    Revoke
-                                  </button>
-                                )}
-                              </>
-                            )}
-
-                            {doc.avgRating && (
-                              <div className="flex items-center gap-1 rounded-lg bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700">
-                                <span>★ {doc.avgRating}</span>
-                              </div>
-                            )}
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-slate-900">{doc.doctorName || doc.name}</h4>
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                  doc.verificationStatus === 'verified'
+                                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                    : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                }`}
+                              >
+                                {doc.verificationStatus || 'verified'}
+                              </span>
+                            </div>
+                            <p className="text-xs font-medium text-slate-600">
+                              {doc.specialty || doc.department} • {doc.qualifications || 'MBBS'}
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-slate-400">
+                              {doc.experienceYears || 5} yrs exp • ₹{doc.consultationFee || 500} fee
+                            </p>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          {doc.verificationStatus !== 'verified' ? (
+                            <button
+                              onClick={() => handleVerifyDoctor(doc._id, 'verified')}
+                              className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-bold text-white shadow-sm hover:bg-emerald-700"
+                            >
+                              <UserCheck className="h-3.5 w-3.5" /> Approve
+                            </button>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
+                              <CheckCircle2 className="h-3.5 w-3.5" /> Verified
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+
+              {/* Subtab: Reception Staff */}
+              {activeSubTab === 'staff' && (
+                <div className="mt-6 space-y-3">
+                  {hospitalStaff.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-slate-200 p-8 text-center">
+                      <Users className="mx-auto h-8 w-8 text-slate-300" />
+                      <p className="mt-2 text-sm font-semibold text-slate-600">No reception staff assigned yet.</p>
+                      <p className="text-xs text-slate-400">Click "+ Add Reception Staff" above to onboard counter desk personnel.</p>
+                    </div>
+                  ) : (
+                    hospitalStaff.map((staff) => (
+                      <div
+                        key={staff._id}
+                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300"
+                      >
+                        <div className="flex items-start gap-3">
+                          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-800 font-bold text-base">
+                            📋
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-sm font-bold text-slate-900">{staff.name}</h4>
+                              <span className="rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-800 uppercase">
+                                {staff.role || 'receptionist'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-slate-500">
+                              {staff.email} • {staff.phone || 'No phone'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 self-end sm:self-center">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">
+                            <CheckCircle2 className="h-3.5 w-3.5" /> Active Counter Desk
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
           ) : (
             <div className="flex h-96 flex-col items-center justify-center rounded-3xl border border-slate-200 bg-white p-8 text-center">
@@ -1025,11 +1130,51 @@ export default function HospitalAdminPortal() {
 
             <form onSubmit={handleRegisterHospital} className="mt-4 space-y-4">
               <div>
-                <label className="text-xs font-bold text-slate-700">Hospital Legal Name *</label>
+                <label className="text-xs font-bold text-slate-700">Organization Type *</label>
+                <div className="mt-1.5 flex gap-3">
+                  <label
+                    className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border p-2.5 text-xs font-bold transition ${
+                      newHospital.type === 'hospital'
+                        ? 'border-blue-600 bg-blue-50/50 text-blue-700 ring-2 ring-blue-600/20'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="orgType"
+                      value="hospital"
+                      checked={newHospital.type === 'hospital'}
+                      onChange={() => setNewHospital({ ...newHospital, type: 'hospital' })}
+                      className="sr-only"
+                    />
+                    🏥 Hospital / Center
+                  </label>
+                  <label
+                    className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border p-2.5 text-xs font-bold transition ${
+                      newHospital.type === 'clinic'
+                        ? 'border-blue-600 bg-blue-50/50 text-blue-700 ring-2 ring-blue-600/20'
+                        : 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="orgType"
+                      value="clinic"
+                      checked={newHospital.type === 'clinic'}
+                      onChange={() => setNewHospital({ ...newHospital, type: 'clinic' })}
+                      className="sr-only"
+                    />
+                    🩺 Small / Independent Clinic
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700">Organization Legal Name *</label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Max Super Speciality Hospital"
+                  placeholder={newHospital.type === 'clinic' ? 'e.g. City Care Family Clinic' : 'e.g. Max Super Speciality Hospital'}
                   value={newHospital.name}
                   onChange={(e) => setNewHospital({ ...newHospital, name: e.target.value })}
                   className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
@@ -1182,6 +1327,29 @@ export default function HospitalAdminPortal() {
                 />
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-slate-700">Services (comma separated)</label>
+                  <input
+                    type="text"
+                    placeholder="OPD, Vaccinations, Diagnostics"
+                    value={newHospital.servicesStr || (newHospital.type === 'clinic' ? 'General OPD, Vaccinations, BP Check' : 'Trauma, ICU, Pharmacy, Diagnostics')}
+                    onChange={(e) => setNewHospital({ ...newHospital, servicesStr: e.target.value })}
+                    className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-slate-700">Working Hours</label>
+                  <input
+                    type="text"
+                    placeholder={newHospital.type === 'clinic' ? '09:00 - 18:00' : '24x7 Emergency'}
+                    value={newHospital.workingHoursStr || (newHospital.type === 'clinic' ? '09:00 - 18:00' : '24x7 Emergency')}
+                    onChange={(e) => setNewHospital({ ...newHospital, workingHoursStr: e.target.value })}
+                    className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
               <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
                 <button
                   type="button"
@@ -1308,6 +1476,92 @@ export default function HospitalAdminPortal() {
                   className="rounded-xl bg-blue-600 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-blue-500/30 hover:bg-blue-700"
                 >
                   Affiliate Doctor
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Add Reception Staff */}
+      {showStaffModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-2">
+                <Users className="h-5 w-5 text-amber-600" />
+                <h3 className="text-lg font-black text-slate-900">Add Reception Staff</h3>
+              </div>
+              <button
+                onClick={() => setShowStaffModal(false)}
+                className="rounded-lg p-1 text-slate-400 hover:bg-slate-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleRegisterStaff} className="mt-4 space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-700">Staff Full Name *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Suman Verma"
+                  value={newStaff.name}
+                  onChange={(e) => setNewStaff({ ...newStaff, name: e.target.value })}
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700">Email Address *</label>
+                <input
+                  type="email"
+                  required
+                  placeholder="reception@hospital.com"
+                  value={newStaff.email}
+                  onChange={(e) => setNewStaff({ ...newStaff, email: e.target.value })}
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700">Contact Phone</label>
+                <input
+                  type="tel"
+                  placeholder="+91-9876543210"
+                  value={newStaff.phone}
+                  onChange={(e) => setNewStaff({ ...newStaff, phone: e.target.value })}
+                  className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-slate-700">Counter Role</label>
+                <select
+                  value={newStaff.role}
+                  onChange={(e) => setNewStaff({ ...newStaff, role: e.target.value })}
+                  className="mt-1 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-500"
+                >
+                  <option value="receptionist">Receptionist / Front Desk</option>
+                  <option value="nurse">Nurse / Triage Desk</option>
+                  <option value="billing">Billing / Cashier</option>
+                </select>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setShowStaffModal(false)}
+                  className="rounded-xl px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-xl bg-amber-600 px-5 py-2 text-xs font-bold text-white shadow-lg shadow-amber-500/30 hover:bg-amber-700"
+                >
+                  Register Staff
                 </button>
               </div>
             </form>

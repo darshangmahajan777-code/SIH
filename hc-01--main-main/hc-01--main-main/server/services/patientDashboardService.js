@@ -197,7 +197,11 @@ export async function getPatientDashboardData(patientId) {
           patientId: patientIdStr,
           status: { $in: ['booked', 'checked-in', 'in-progress'] },
         })
-          .populate('doctorId', 'doctorName specialty hospitalName consultationFee avgRating')
+          .populate(
+            'doctorId',
+            'doctorName specialty hospitalName consultationFee avgRating ratingCount experienceYears qualifications isAvailableToday location hospitalId'
+          )
+          .populate('hospitalId', 'name code address contact facilities totalBeds rating')
           .populate('tokenId')
           .sort({ date: 1, slotTime: 1 })
           .lean()

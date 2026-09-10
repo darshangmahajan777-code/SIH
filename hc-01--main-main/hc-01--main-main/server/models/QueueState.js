@@ -9,6 +9,12 @@ const queueStateSchema = new mongoose.Schema({
     type: String,
     default: 'OPD',
   },
+  hospitalId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Hospital',
+    default: null,
+    index: true,
+  },
   currentTokenNumber: {
     type: Number,
     default: 0,
@@ -37,6 +43,6 @@ const queueStateSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-queueStateSchema.index({ date: 1, department: 1 }, { unique: true });
+queueStateSchema.index({ date: 1, department: 1, hospitalId: 1 }, { unique: true });
 
 export default mongoose.model('QueueState', queueStateSchema);

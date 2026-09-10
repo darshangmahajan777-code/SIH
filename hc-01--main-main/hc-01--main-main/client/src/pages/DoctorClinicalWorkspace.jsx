@@ -1,18 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import QueueList from '../components/QueueList';
 import ConsultationTimer from '../components/ConsultationTimer';
 import StatsCard from '../components/StatsCard';
-import HistoryTimeline from '../components/HistoryTimeline';
-import TestRecordsTimeline from '../components/TestRecordsTimeline';
-import CarePlanCard from '../components/CarePlanCard';
 import { useQueue } from '../context/QueueContext';
+import { useAuth } from '../context/AuthContext';
 import * as api from '../services/api';
 
 const DEFAULT_DOCTOR_ID = '65f000000000000000000002';
 
 export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCTOR_ID }) {
-  const [doctorId, setDoctorId] = useState(initialDoctorId);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlAppointmentId = searchParams.get('appointmentId');
+  const urlTab = searchParams.get('tab');
+
+  const { user, role, isAuthenticated, loginWithRole } = useAuth();
+  const [doctorId, setDoctorId] = useState(user?._id || user?.id || initialDoctorId);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState('clinical'); // 'clinical' | 'queue'
   const [scheduleFilter, setScheduleFilter] = useState('all'); // 'all' | 'video' | 'checked-in' | 'in-progress' | 'completed'
 
@@ -21,7 +24,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
 
   // Doctor session state
   const [session, setSession] = useState(null);
-  const [sessionDoctorName, setSessionDoctorName] = useState('Dr. Sarah Patel');
+  const [sessionDoctorName, setSessionDoctorName] = useState(user?.name || 'Dr. Sarah Patel');
   const [sessionError, setSessionError] = useState('');
 
   // Workspace summary state
@@ -29,12 +32,30 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
   const [summaryLoading, setSummaryLoading] = useState(true);
   const [summaryError, setSummaryError] = useState(null);
 
-  // Patient Encounter Dossier state (Patient View)
-  const [activeEncounterId, setActiveEncounterId] = useState(null);
+  // Patient Encounter Dossier state (Longitudinal Patient Record)
+  const [activeEncounterId, setActiveEncounterId] = useState(urlAppointmentId || null);
   const [encounterData, setEncounterData] = useState(null);
   const [encounterLoading, setEncounterLoading] = useState(false);
   const [encounterError, setEncounterError] = useState(null);
-  const [activeClinicalSection, setActiveClinicalSection] = useState('overview'); // 'overview' | 'history' | 'tests' | 'prescriptions' | 'care_plans'
+  const [activeClinicalSection, setActiveClinicalSection] = useState(urlTab || 'overview');
+  // Sections: 'overview' | 'current_visit' | 'medical_history' | 'previous_visits' | 'prescriptions' | 'tests' | 'care_plan' | 'timeline'
+
+  // Current Visit Editable State
+  const [currentVisitForm, setCurrentVisitForm] = useState({
+    chiefComplaint: '',
+    symptoms: '',
+    duration: '',
+    bp: '',
+    heartRate: '',
+    temperature: '',
+    spO2: '',
+    respiratoryRate: '',
+    currentObservations: '',
+    clinicalNotes: '',
+    diagnosis: '',
+    treatment: '',
+  });
+  const [savingCurrentVisit, setSavingCurrentVisit] = useState(false);
 
   // Clinical Actions Modal States
   // 1. Prescription Modal
@@ -74,7 +95,12 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
 
   // 4. Doctor-Verified History Modal
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
-  const [historyForm, setHistoryForm] = useState({ condition: '', conditionDate: '', notes: '' });
+  const [historyForm, setHistoryForm] = useState({
+    condition: '',
+    conditionDate: new Date().toISOString().slice(0, 10),
+    category: 'diagnosis',
+    notes: '',
+  });
   const [submittingHistory, setSubmittingHistory] = useState(false);
 
   // 5. Priority Override Modal (Existing Queue engine feature)
@@ -91,6 +117,17 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     setToastMessage({ text: msg, type });
     setTimeout(() => setToastMessage(null), 4000);
   };
+
+  // Sync doctorId if user logs in
+  useEffect(() => {
+    if (user?._id || user?.id) {
+      setDoctorId(user._id || user.id);
+      if (user.name) setSessionDoctorName(user.name);
+    }
+  }, [user]);
+
+  // Security guard check
+  const isExplicitlyForbidden = isAuthenticated && (role === 'reception' || role === 'patient');
 
   // Fetch session
   const refetchSession = useCallback(async () => {
@@ -110,8 +147,12 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     setSummaryLoading(true);
     setSummaryError(null);
     try {
+      const token = localStorage.getItem('mediqueue_auth_token');
       const res = await fetch(`/api/doctor/workspace-summary?doctorId=${doctorId}`, {
-        headers: { 'x-doctor-id': doctorId },
+        headers: {
+          'x-doctor-id': doctorId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
       const json = await res.json();
       if (json.success) {
@@ -119,7 +160,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
       } else {
         setSummaryError(json.error || 'Failed to load doctor workspace summary');
       }
-    } catch (err) {
+    } catch {
       setSummaryError('Network error loading doctor workspace');
     } finally {
       setSummaryLoading(false);
@@ -132,29 +173,52 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     setEncounterLoading(true);
     setEncounterError(null);
     try {
+      const token = localStorage.getItem('mediqueue_auth_token');
       const res = await fetch(`/api/doctor/encounter/${appointmentId}?doctorId=${doctorId}`, {
-        headers: { 'x-doctor-id': doctorId },
+        headers: {
+          'x-doctor-id': doctorId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
       const json = await res.json();
       if (json.success) {
-        setEncounterData(json.data);
+        const data = json.data;
+        setEncounterData(data);
         setActiveEncounterId(appointmentId);
+
+        // Populate Current Visit Form
+        const cv = data.currentVisit || {};
+        setCurrentVisitForm({
+          chiefComplaint: cv.chiefComplaint || data.appointment?.chiefComplaint || '',
+          symptoms: Array.isArray(cv.symptoms) ? cv.symptoms.join(', ') : (cv.symptoms || ''),
+          duration: cv.duration || '',
+          bp: cv.vitals?.bp || '',
+          heartRate: cv.vitals?.heartRate !== undefined && cv.vitals?.heartRate !== null ? String(cv.vitals.heartRate) : '',
+          temperature: cv.vitals?.temperature || '',
+          spO2: cv.vitals?.spO2 || '',
+          respiratoryRate: cv.vitals?.respiratoryRate !== undefined && cv.vitals?.respiratoryRate !== null ? String(cv.vitals.respiratoryRate) : '',
+          currentObservations: cv.currentObservations || '',
+          clinicalNotes: cv.doctorNotes || cv.clinicalNotes || data.appointment?.clinicalNotes || '',
+          diagnosis: cv.diagnosis || data.appointment?.diagnosis || '',
+          treatment: cv.treatment || data.appointment?.treatment || '',
+        });
+
         // Pre-fill diagnosis from chief complaint
-        setRxDiagnosis(json.data.appointment?.chiefComplaint || '');
+        setRxDiagnosis(cv.diagnosis || data.appointment?.chiefComplaint || '');
         setCarePlanForm((prev) => ({
           ...prev,
-          diagnosis: json.data.appointment?.chiefComplaint || 'Clinical Consultation',
+          diagnosis: cv.diagnosis || data.appointment?.chiefComplaint || 'Clinical Consultation',
           followUpDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
         }));
         setHistoryForm((prev) => ({
           ...prev,
-          condition: json.data.appointment?.chiefComplaint || '',
+          condition: cv.diagnosis || data.appointment?.chiefComplaint || '',
           conditionDate: new Date().toISOString().slice(0, 10),
         }));
       } else {
         setEncounterError(json.error || 'Failed to load patient encounter');
       }
-    } catch (err) {
+    } catch {
       setEncounterError('Network error opening patient encounter');
     } finally {
       setEncounterLoading(false);
@@ -165,6 +229,16 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     refetchSession();
     fetchWorkspaceSummary();
   }, [refetchSession, fetchWorkspaceSummary]);
+
+  // Handle URL search params on mount
+  useEffect(() => {
+    if (urlAppointmentId) {
+      fetchPatientEncounter(urlAppointmentId);
+    }
+    if (urlTab) {
+      setActiveClinicalSection(urlTab);
+    }
+  }, [urlAppointmentId, urlTab, fetchPatientEncounter]);
 
   // Handle start session
   const handleStartSession = async () => {
@@ -193,12 +267,17 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     }
   };
 
-  // Encounter Actions
+  // Encounter Actions: Start Consultation
   const handleStartConsultation = async (appointmentId) => {
     try {
+      const token = localStorage.getItem('mediqueue_auth_token');
       const res = await fetch(`/api/doctor/encounter/${appointmentId}/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-doctor-id': doctorId },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-doctor-id': doctorId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ doctorId }),
       });
       const json = await res.json();
@@ -214,15 +293,21 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     }
   };
 
+  // Encounter Actions: Complete Consultation
   const handleCompleteConsultation = async (appointmentId) => {
     try {
+      const token = localStorage.getItem('mediqueue_auth_token');
       const res = await fetch(`/api/doctor/encounter/${appointmentId}/complete`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-doctor-id': doctorId },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-doctor-id': doctorId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           doctorId,
-          diagnosis: encounterData?.appointment?.chiefComplaint || rxDiagnosis || 'Clinical Consultation',
-          notes: 'Consultation successfully completed by attending clinician',
+          diagnosis: currentVisitForm.diagnosis || encounterData?.appointment?.chiefComplaint || rxDiagnosis || 'Clinical Consultation',
+          notes: currentVisitForm.clinicalNotes || 'Consultation successfully completed by attending clinician',
         }),
       });
       const json = await res.json();
@@ -238,6 +323,43 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     }
   };
 
+  // Encounter Actions: Save Current Visit Vitals & Notes
+  const handleSaveCurrentVisit = async (e) => {
+    e?.preventDefault();
+    if (!activeEncounterId) return;
+    setSavingCurrentVisit(true);
+    try {
+      const symptomsArr = currentVisitForm.symptoms
+        ? currentVisitForm.symptoms.split(',').map((s) => s.trim()).filter(Boolean)
+        : [];
+
+      await api.updateEncounterCurrentVisit(activeEncounterId, {
+        doctorId,
+        chiefComplaint: currentVisitForm.chiefComplaint,
+        symptoms: symptomsArr,
+        duration: currentVisitForm.duration,
+        vitals: {
+          bp: currentVisitForm.bp,
+          heartRate: currentVisitForm.heartRate ? Number(currentVisitForm.heartRate) : null,
+          temperature: currentVisitForm.temperature,
+          spO2: currentVisitForm.spO2,
+          respiratoryRate: currentVisitForm.respiratoryRate ? Number(currentVisitForm.respiratoryRate) : null,
+        },
+        currentObservations: currentVisitForm.currentObservations,
+        clinicalNotes: currentVisitForm.clinicalNotes,
+        diagnosis: currentVisitForm.diagnosis,
+        treatment: currentVisitForm.treatment,
+      });
+
+      showToast('✓ Current visit vitals and clinical observations saved.');
+      fetchPatientEncounter(activeEncounterId);
+    } catch (err) {
+      showToast(err.message || 'Failed to update current visit', 'error');
+    } finally {
+      setSavingCurrentVisit(false);
+    }
+  };
+
   // Issue Prescription
   const handlePrescriptionSubmit = async (e) => {
     e.preventDefault();
@@ -248,14 +370,19 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     setSubmittingRx(true);
     try {
       const patientId = encounterData.patient.id;
+      const token = localStorage.getItem('mediqueue_auth_token');
       const res = await fetch(`/api/doctor/encounter/${activeEncounterId}/prescription`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-doctor-id': doctorId },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-doctor-id': doctorId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           patientId,
           doctorId,
           doctorName: summary?.doctor?.doctorName || sessionDoctorName,
-          diagnosis: rxDiagnosis || encounterData.appointment.chiefComplaint,
+          diagnosis: rxDiagnosis || currentVisitForm.diagnosis || encounterData.appointment.chiefComplaint,
           medications: rxMedications,
           instructions: rxInstructions,
         }),
@@ -285,9 +412,14 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     setSubmittingTest(true);
     try {
       const patientId = encounterData.patient.id;
+      const token = localStorage.getItem('mediqueue_auth_token');
       const res = await fetch(`/api/doctor/encounter/${activeEncounterId}/order-test`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-doctor-id': doctorId },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-doctor-id': doctorId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           patientId,
           doctorId,
@@ -323,9 +455,14 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     setSubmittingCarePlan(true);
     try {
       const patientId = encounterData.patient.id;
+      const token = localStorage.getItem('mediqueue_auth_token');
       const res = await fetch(`/api/doctor/encounter/${activeEncounterId}/care-plan`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-doctor-id': doctorId },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-doctor-id': doctorId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           patientId,
           doctorId,
@@ -341,7 +478,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
       });
       const json = await res.json();
       if (json.success) {
-        showToast('Doctor care plan issued successfully.');
+        showToast('Doctor care plan established successfully.');
         setCarePlanModalOpen(false);
         fetchPatientEncounter(activeEncounterId);
       } else {
@@ -364,28 +501,34 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     setSubmittingHistory(true);
     try {
       const patientId = encounterData.patient.id;
+      const token = localStorage.getItem('mediqueue_auth_token');
       const res = await fetch(`/api/doctor/encounter/${activeEncounterId}/verified-history`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-doctor-id': doctorId },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-doctor-id': doctorId,
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           patientId,
           doctorId,
           doctorName: summary?.doctor?.doctorName || sessionDoctorName,
           condition: historyForm.condition.trim(),
           conditionDate: historyForm.conditionDate || new Date().toISOString().slice(0, 10),
+          category: historyForm.category || 'diagnosis',
           notes: historyForm.notes.trim(),
         }),
       });
       const json = await res.json();
       if (json.success) {
-        showToast('Doctor-verified medical history record added.');
+        showToast('Medical history record added.');
         setHistoryModalOpen(false);
         fetchPatientEncounter(activeEncounterId);
       } else {
-        showToast(json.error || 'Failed to record verified history', 'error');
+        showToast(json.error || 'Failed to record history', 'error');
       }
     } catch {
-      showToast('Network error recording verified history', 'error');
+      showToast('Network error recording history', 'error');
     } finally {
       setSubmittingHistory(false);
     }
@@ -433,6 +576,18 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     }
   };
 
+  // Request Patient Consent Trigger
+  const handleRequestConsent = async () => {
+    if (!activeEncounterId) return;
+    try {
+      await api.requestEncounterConsent(activeEncounterId, { doctorId });
+      showToast('Consent request dispatched to patient.');
+      fetchPatientEncounter(activeEncounterId);
+    } catch (err) {
+      showToast(err.message || 'Failed to send consent request', 'error');
+    }
+  };
+
   // Filtered Appointments
   const filteredAppointments = useMemo(() => {
     if (!summary?.todayAppointments) return [];
@@ -445,6 +600,42 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
     () => queue.filter((token) => token.status === 'waiting'),
     [queue]
   );
+
+  // ── STRICT SECURITY GUARD: BLOCK RECEPTION AND PATIENTS ──
+  if (isExplicitlyForbidden) {
+    return (
+      <div className="max-w-3xl mx-auto my-16 p-8 bg-white border border-rose-200 rounded-3xl shadow-xl text-center space-y-6">
+        <div className="w-20 h-20 mx-auto rounded-3xl bg-rose-50 border border-rose-200 flex items-center justify-center text-4xl shadow-inner">
+          🔒
+        </div>
+        <div className="space-y-2">
+          <span className="text-[11px] font-black uppercase tracking-wider bg-rose-100 text-rose-800 px-3 py-1 rounded-full border border-rose-300">
+            403 Forbidden • Doctor-Only Clinical Zone
+          </span>
+          <h2 className="text-2xl font-black text-slate-900">
+            Doctor Clinical Workspace Access Restricted
+          </h2>
+          <p className="text-sm text-slate-600 max-w-lg mx-auto leading-relaxed">
+            This workspace provides unrestricted access to confidential longitudinal patient medical records, active diagnoses, clinical vitals, and surgical histories. Reception staff and standard patient accounts are strictly prevented from accessing this clinical portal under hospital privacy policy.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
+          <button
+            onClick={() => loginWithRole('doctor')}
+            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-2xl shadow-md transition"
+          >
+            Switch to Doctor Session (Demo)
+          </button>
+          <Link
+            to="/"
+            className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold rounded-2xl border border-slate-200 transition"
+          >
+            Return to Home
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto py-6 px-4 space-y-6">
@@ -486,7 +677,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
               {summary?.doctor?.doctorName || sessionDoctorName}
             </h1>
             <p className="text-xs text-slate-500">
-              {summary?.doctor?.specialty || 'General Medicine'} • {summary?.doctor?.hospitalName || 'MediQueue Hospital'}
+              {summary?.doctor?.specialty || 'General Medicine'} • {summary?.doctor?.hospitalName || 'Apex Heart & Multispecialty Hospital'}
             </p>
           </div>
         </div>
@@ -526,10 +717,10 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
           </div>
 
           <Link
-            to="/doctor-schedule"
+            to="/doctor/dashboard"
             className="px-3.5 py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition"
           >
-            📅 Schedule
+            📊 Doctor Dashboard
           </Link>
 
           {session ? (
@@ -552,7 +743,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
         </div>
       </div>
 
-      {/* WORKSPACE VIEW: CLINICAL (Doctor Home & Patient Encounter) */}
+      {/* WORKSPACE VIEW: CLINICAL (Doctor Home & Longitudinal Patient Encounter) */}
       {activeWorkspaceTab === 'clinical' && (
         <div className="space-y-6">
           {/* STATS METRIC BAR */}
@@ -600,292 +791,158 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
             </div>
 
             <div className="bg-white rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4 shadow-sm">
-              <span className="text-[11px] font-bold text-emerald-700 block uppercase">Video Consults</span>
+              <span className="text-[11px] font-bold text-emerald-700 block uppercase">Care Plans</span>
               <span className="text-2xl font-black text-emerald-700 mt-0.5 block">
-                {summary?.stats?.videoCount ?? 0}
+                {summary?.stats?.activeCarePlansCount ?? 0}
               </span>
-              <span className="text-[10px] text-emerald-600 font-medium">Telemedicine</span>
+              <span className="text-[10px] text-emerald-600 font-medium">Active Monitoring</span>
             </div>
           </div>
 
-          {/* NEXT PATIENT / ACTIVE CONSULTATION SPOTLIGHT */}
-          {summary?.nextPatient && (
-            <div className="bg-gradient-to-r from-blue-900 to-indigo-950 rounded-3xl p-6 text-white shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-6">
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="bg-blue-500/30 text-blue-200 text-[10px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full border border-blue-400/30">
-                    {summary.nextPatient.status === 'in-progress' ? '⚡ CURRENTLY SERVING' : '▶ NEXT PATIENT IN LINE'}
-                  </span>
-                  {summary.nextPatient.priority && (
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${
-                        ['critical', 'emergency'].includes(summary.nextPatient.priority)
-                          ? 'bg-rose-500 text-white animate-pulse'
-                          : 'bg-amber-400 text-slate-900'
-                      }`}
-                    >
-                      {summary.nextPatient.priority} Priority
-                    </span>
-                  )}
-                  <span className="text-xs text-blue-200">
-                    {summary.nextPatient.mode === 'video' ? '📹 Video' : '🏥 In-Person'}
-                  </span>
-                </div>
-
-                <div className="flex items-baseline gap-3">
-                  <h2 className="text-2xl font-black">{summary.nextPatient.patientName}</h2>
-                  {summary.nextPatient.tokenNumber && (
-                    <span className="text-blue-300 font-bold text-sm bg-white/10 px-2.5 py-0.5 rounded-lg">
-                      Token #{summary.nextPatient.tokenNumber}
-                    </span>
-                  )}
-                  <span className="text-blue-200 text-xs font-semibold">⏰ {summary.nextPatient.slotTime}</span>
-                </div>
-
-                {summary.nextPatient.chiefComplaint && (
-                  <p className="text-xs text-blue-100 max-w-xl bg-white/5 p-2 rounded-xl border border-white/10">
-                    <strong>Chief Complaint:</strong> {summary.nextPatient.chiefComplaint}
-                  </p>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-3">
-                {summary.nextPatient.appointmentId ? (
-                  <button
-                    type="button"
-                    id="btn-open-spotlight-dossier"
-                    onClick={() => fetchPatientEncounter(summary.nextPatient.appointmentId)}
-                    className="bg-white hover:bg-blue-50 text-blue-950 font-black text-xs px-5 py-3 rounded-2xl shadow-lg transition flex items-center gap-2"
-                  >
-                    <span>🩺</span> Open Patient Clinical Dossier
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => callNext()}
-                    className="bg-blue-600 hover:bg-blue-500 text-white font-black text-xs px-5 py-3 rounded-2xl shadow-lg transition"
-                  >
-                    Call Next Token
-                  </button>
-                )}
-              </div>
+          {/* ACTIVE PATIENT ENCOUNTER DOSSIER (LONGITUDINAL PATIENT RECORD) */}
+          {activeEncounterId && encounterLoading && (
+            <div className="bg-white rounded-3xl border border-slate-200 p-12 text-center shadow-sm space-y-3">
+              <div className="inline-block animate-spin text-3xl">🩺</div>
+              <p className="text-sm font-bold text-slate-700">Loading complete longitudinal patient record...</p>
+              <p className="text-xs text-slate-400">Synthesizing past visits, vitals, medical history, prescriptions, and lab tests</p>
             </div>
           )}
 
-          {/* URGENT / CRITICAL PATIENT TRIAGE ALERT */}
-          {summary?.urgentPatients && summary.urgentPatients.length > 0 && (
-            <div className="bg-rose-50 border border-rose-200 rounded-3xl p-5 shadow-sm space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-xl">🚨</span>
-                  <h3 className="font-black text-rose-950 text-sm">
-                    Acuity Alert: High Priority / Emergent Patients Waiting ({summary.urgentPatients.length})
-                  </h3>
-                </div>
-                <span className="text-[11px] font-bold text-rose-700 uppercase bg-rose-100 px-2.5 py-0.5 rounded-full">
-                  Clinical Action Required
-                </span>
-              </div>
+          {activeEncounterId && encounterError && (
+            <div className="bg-rose-50 border border-rose-200 rounded-3xl p-6 text-center space-y-3">
+              <span className="text-2xl">⚠️</span>
+              <h3 className="text-sm font-bold text-rose-900">{encounterError}</h3>
+              <button
+                type="button"
+                onClick={() => setActiveEncounterId(null)}
+                className="px-4 py-2 bg-rose-600 text-white rounded-xl text-xs font-bold"
+              >
+                Close Encounter View
+              </button>
+            </div>
+          )}
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                {summary.urgentPatients.map((apt) => (
-                  <div
-                    key={apt._id}
-                    className="bg-white rounded-2xl border border-rose-200 p-4 shadow-sm flex flex-col justify-between gap-3"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between">
-                        <span className="font-black text-slate-900 text-sm">{apt.patientId?.name || 'Patient'}</span>
-                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-rose-600 text-white animate-pulse">
-                          {apt.priority}
+          {activeEncounterId && !encounterLoading && encounterData && (
+            <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-md space-y-6 animate-fade-in">
+              {/* PATIENT BANNER (Demographics, ABHA ID, Blood Group, Allergies, BMI) */}
+              <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-3xl p-6 shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-6">
+                <div className="flex items-start gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-500 to-indigo-500 text-white flex items-center justify-center font-black text-2xl shadow-inner shrink-0">
+                    {encounterData.patient.name ? encounterData.patient.name.charAt(0).toUpperCase() : 'P'}
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-2xl font-black text-white">{encounterData.patient.name}</h2>
+                      <span className="text-[11px] font-black uppercase tracking-wider bg-white/20 text-white px-2.5 py-0.5 rounded-full backdrop-blur-sm border border-white/20">
+                        ID: {encounterData.patient.id || encounterData.patientOverview?.patientId || 'ABHA-PAT-901'}
+                      </span>
+                      {encounterData.patient.bloodGroup && (
+                        <span className="text-[11px] font-black uppercase tracking-wider bg-rose-500/80 text-white px-2.5 py-0.5 rounded-full">
+                          🩸 {encounterData.patient.bloodGroup}
                         </span>
-                      </div>
-                      <p className="text-xs text-slate-500 mt-1">⏰ {apt.slotTime} • {apt.mode === 'video' ? '📹 Video' : '🏥 In-Person'}</p>
-                      {apt.chiefComplaint && (
-                        <p className="text-xs text-rose-900 font-medium bg-rose-50 p-2 rounded-lg mt-2 border border-rose-100">
-                          {apt.chiefComplaint}
-                        </p>
+                      )}
+                      {encounterData.patient.bmi && (
+                        <span className={`text-[11px] font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full ${
+                          encounterData.patient.bmiCategory === 'Normal'
+                            ? 'bg-emerald-500/80 text-white'
+                            : 'bg-amber-500/80 text-white'
+                        }`}>
+                          BMI: {encounterData.patient.bmi} ({encounterData.patient.bmiCategory})
+                        </span>
                       )}
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => fetchPatientEncounter(apt._id)}
-                      className="w-full bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs py-2 rounded-xl transition"
-                    >
-                      Prioritize & Open Dossier
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+                    <div className="flex flex-wrap items-center gap-4 text-xs text-slate-300">
+                      <span>Age: <strong className="text-white">{encounterData.patient.age || 'N/A'}</strong></span>
+                      <span>Gender: <strong className="text-white capitalize">{encounterData.patient.gender || 'Not specified'}</strong></span>
+                      <span>Phone: <strong className="text-white">{encounterData.patient.phone || 'N/A'}</strong></span>
+                      {encounterData.patient.emergencyContact && (
+                        <span>Emergency: <strong className="text-white">{encounterData.patient.emergencyContact}</strong></span>
+                      )}
+                    </div>
 
-          {/* PATIENT ENCOUNTER VIEW (When a patient is opened) */}
-          {activeEncounterId && encounterData && (
-            <div id="patient-encounter-dossier" className="bg-white rounded-3xl border-2 border-blue-500 p-6 sm:p-8 shadow-2xl space-y-6">
-              {/* Dossier Header */}
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-100 pb-5">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="bg-blue-100 text-blue-800 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
-                      Clinical Encounter Active
-                    </span>
-                    <span className="text-xs font-semibold text-slate-500">
-                      Encounter Date: {encounterData.appointment.date} at {encounterData.appointment.slotTime}
-                    </span>
-                  </div>
-                  <h2 className="text-3xl font-black text-slate-900 mt-1">
-                    {encounterData.patient.name}
-                  </h2>
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-slate-600 mt-1">
-                    <span>Age: <strong>{encounterData.patient.age}</strong></span>
-                    <span>Gender: <strong className="capitalize">{encounterData.patient.gender}</strong></span>
-                    <span>Blood Group: <strong className="text-rose-600">{encounterData.patient.bloodGroup}</strong></span>
-                    <span>Phone: {encounterData.patient.phone}</span>
-                    {encounterData.patient.allergies?.length > 0 && (
-                      <span className="bg-rose-50 text-rose-700 px-2 py-0.5 rounded-md font-bold border border-rose-200">
-                        ⚠️ Allergies: {encounterData.patient.allergies.join(', ')}
-                      </span>
+                    {/* Prominent Allergies Alert Badge */}
+                    {encounterData.patient.allergies && encounterData.patient.allergies.length > 0 ? (
+                      <div className="inline-flex items-center gap-1.5 bg-rose-500/90 text-white px-3 py-1 rounded-xl text-xs font-black shadow-sm mt-1">
+                        <span>⚠️ ALLERGIES:</span>
+                        <span>{encounterData.patient.allergies.join(', ')}</span>
+                      </div>
+                    ) : (
+                      <div className="inline-flex items-center gap-1.5 bg-emerald-500/30 text-emerald-200 border border-emerald-400/30 px-3 py-0.5 rounded-xl text-xs font-semibold mt-1">
+                        <span>✓ No Known Drug Allergies (NKDA)</span>
+                      </div>
                     )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setActiveEncounterId(null);
-                      setEncounterData(null);
-                    }}
-                    className="px-4 py-2 text-xs font-bold text-slate-500 hover:text-slate-800 bg-slate-100 hover:bg-slate-200 rounded-xl transition"
-                  >
-                    ✕ Close Dossier
-                  </button>
-                </div>
-              </div>
-
-              {/* CONSENT STATUS BADGE (SECURITY CRITICAL) */}
-              <div
-                id="consent-status-banner"
-                className={`rounded-2xl p-5 border transition flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
-                  encounterData.consent.isAuthorized
-                    ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
-                    : 'bg-amber-50 border-amber-300 text-amber-950'
-                }`}
-              >
-                <div className="flex items-start sm:items-center gap-3">
-                  <span className="text-3xl">
-                    {encounterData.consent.isAuthorized ? '🛡️' : '🔒'}
-                  </span>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-xs font-black uppercase tracking-wider px-2.5 py-0.5 rounded-full border ${
-                          encounterData.consent.isAuthorized
-                            ? 'bg-emerald-600 text-white border-emerald-700'
-                            : 'bg-amber-600 text-white border-amber-700'
-                        }`}
-                      >
-                        {encounterData.consent.status}
-                      </span>
-                      {encounterData.consent.scope && (
-                        <span className="text-[11px] font-bold text-slate-600 bg-white/70 px-2 py-0.5 rounded-full">
-                          Scope: {encounterData.consent.scope}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs font-medium mt-1 leading-relaxed">
-                      {encounterData.consent.message}
-                    </p>
-                  </div>
-                </div>
-
-                {!encounterData.consent.isAuthorized && (
-                  <div className="shrink-0 text-right">
-                    <span className="text-[11px] font-bold text-amber-900 bg-amber-100 px-3 py-1.5 rounded-xl border border-amber-200 block">
-                      Protected Data Shielded
-                    </span>
-                  </div>
-                )}
-              </div>
-
-              {/* CURRENT ENCOUNTER STATUS & CHIEF COMPLAINT */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="md:col-span-2 bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-2">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase">Encounter Reason & Chief Complaint</span>
-                  <p className="text-sm font-semibold text-slate-900">
-                    {encounterData.appointment.chiefComplaint}
-                  </p>
-                  <div className="flex items-center gap-3 pt-1 text-xs text-slate-600">
-                    <span>Mode: <strong className="capitalize">{encounterData.appointment.mode}</strong></span>
-                    <span>Priority: <strong className="capitalize">{encounterData.appointment.priority}</strong></span>
-                    <span>Status: <strong className="capitalize text-blue-700">{encounterData.appointment.status}</strong></span>
-                  </div>
-                </div>
-
-                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col justify-between gap-2">
-                  <span className="text-[11px] font-bold text-slate-500 uppercase">Consultation State</span>
-                  <div>
-                    <span className={`text-sm font-black uppercase px-3 py-1 rounded-full ${
+                {/* Encounter Quick Controls & Close */}
+                <div className="flex flex-col items-end gap-2.5 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <span className={`text-xs font-black uppercase px-3 py-1 rounded-full ${
                       encounterData.appointment.status === 'completed'
-                        ? 'bg-emerald-100 text-emerald-800'
+                        ? 'bg-emerald-500 text-white'
                         : encounterData.appointment.status === 'in-progress'
-                        ? 'bg-blue-100 text-blue-800 animate-pulse'
-                        : 'bg-indigo-100 text-indigo-800'
+                        ? 'bg-blue-500 text-white animate-pulse'
+                        : 'bg-indigo-500 text-white'
                     }`}>
                       {encounterData.appointment.status}
                     </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveEncounterId(null)}
+                      className="text-xs text-slate-300 hover:text-white bg-white/10 hover:bg-white/20 px-3 py-1 rounded-xl transition"
+                    >
+                      ✕ Close Dossier
+                    </button>
                   </div>
-                  <ConsultationTimer
-                    isActive={encounterData.appointment.status === 'in-progress'}
-                    startTime={encounterData.appointment.token?.calledAt || new Date()}
-                  />
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {['booked', 'checked-in'].includes(encounterData.appointment.status) && (
+                      <button
+                        type="button"
+                        id="btn-start-consult"
+                        onClick={() => handleStartConsultation(activeEncounterId)}
+                        className="bg-blue-500 hover:bg-blue-400 text-white font-bold text-xs px-4 py-2 rounded-xl transition shadow-sm"
+                      >
+                        ▶ Start Consultation
+                      </button>
+                    )}
+
+                    {encounterData.appointment.status === 'in-progress' && (
+                      <button
+                        type="button"
+                        id="btn-complete-consult"
+                        onClick={() => handleCompleteConsultation(activeEncounterId)}
+                        className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold text-xs px-4 py-2 rounded-xl transition shadow-sm"
+                      >
+                        ✓ Complete Consultation
+                      </button>
+                    )}
+
+                    {encounterData.appointment.mode === 'video' && (
+                      <Link
+                        to={`/telemedicine/${encounterData.appointment.id}?role=doctor`}
+                        id="btn-video-consult"
+                        className="bg-teal-500 hover:bg-teal-400 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center gap-1.5"
+                      >
+                        <span>📹</span> Video Consult
+                      </Link>
+                    )}
+                  </div>
                 </div>
               </div>
 
-              {/* CLINICAL ACTION BAR */}
-              <div className="bg-slate-900 text-white rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 shadow-lg">
-                <span className="text-xs font-bold text-slate-300">Clinician Encounter Actions:</span>
+              {/* ACTION TOOLBAR: QUICK MODAL TRIGGERS */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-700">
+                  <span>⚡ Quick Clinical Interventions:</span>
+                </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {encounterData.appointment.status === 'booked' && (
-                    <button
-                      type="button"
-                      id="btn-start-consult"
-                      onClick={() => handleStartConsultation(activeEncounterId)}
-                      className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition"
-                    >
-                      ▶ Start Consultation
-                    </button>
-                  )}
-
-                  {encounterData.appointment.status === 'checked-in' && (
-                    <button
-                      type="button"
-                      id="btn-start-consult"
-                      onClick={() => handleStartConsultation(activeEncounterId)}
-                      className="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition shadow-sm"
-                    >
-                      ▶ Start Consultation
-                    </button>
-                  )}
-
-                  {encounterData.appointment.status === 'in-progress' && (
-                    <button
-                      type="button"
-                      id="btn-complete-consult"
-                      onClick={() => handleCompleteConsultation(activeEncounterId)}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition shadow-sm"
-                    >
-                      ✓ Complete Consultation
-                    </button>
-                  )}
-
                   <button
                     type="button"
                     id="btn-issue-rx"
                     onClick={() => setRxModalOpen(true)}
-                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center gap-1.5"
+                    className="bg-purple-600 hover:bg-purple-500 text-white font-bold text-xs px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm"
                   >
                     <span>💊</span> Issue Prescription
                   </button>
@@ -894,100 +951,418 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                     type="button"
                     id="btn-order-test"
                     onClick={() => setTestModalOpen(true)}
-                    className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center gap-1.5"
+                    className="bg-cyan-600 hover:bg-cyan-500 text-white font-bold text-xs px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm"
                   >
-                    <span>🧪</span> Order Test
+                    <span>🧪</span> Order Lab Test
                   </button>
 
                   <button
                     type="button"
                     id="btn-issue-careplan"
                     onClick={() => setCarePlanModalOpen(true)}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center gap-1.5"
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm"
                   >
-                    <span>📋</span> Issue Care Plan
+                    <span>📋</span> Establish Care Plan
                   </button>
 
                   <button
                     type="button"
                     id="btn-add-history"
                     onClick={() => setHistoryModalOpen(true)}
-                    className="bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center gap-1.5"
+                    className="bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm"
                   >
                     <span>🩺</span> Record History
                   </button>
 
-                  {encounterData.appointment.mode === 'video' && (
-                    <Link
-                      to={`/telemedicine/${encounterData.appointment.id}?role=doctor`}
-                      id="btn-video-consult"
-                      className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition flex items-center gap-1.5"
+                  {!encounterData.consent.isAuthorized && (
+                    <button
+                      type="button"
+                      onClick={handleRequestConsent}
+                      className="bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm"
                     >
-                      <span>📹</span> Video Consult
-                    </Link>
+                      <span>🔐</span> Request Patient Consent
+                    </button>
                   )}
                 </div>
               </div>
 
-              {/* SHARED CLINICAL RECORDS (Only if AUTHORIZED) */}
-              <div className="space-y-4 pt-2">
-                <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                  <h3 className="text-base font-black text-slate-900">
-                    Patient Clinical Dossier & Records
-                  </h3>
-                  <div className="flex items-center gap-2">
-                    {['overview', 'history', 'tests', 'prescriptions', 'care_plans'].map((sec) => (
-                      <button
-                        key={sec}
-                        type="button"
-                        onClick={() => setActiveClinicalSection(sec)}
-                        className={`text-xs font-bold px-3 py-1.5 rounded-xl capitalize transition ${
-                          activeClinicalSection === sec
-                            ? 'bg-blue-600 text-white'
-                            : 'text-slate-600 hover:bg-slate-100'
-                        }`}
-                      >
-                        {sec.replace(/_/g, ' ')}
-                      </button>
-                    ))}
-                  </div>
+              {/* 8 DEDICATED LONGITUDINAL RECORD TABS */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-1 overflow-x-auto pb-2 border-b border-slate-200 scrollbar-none">
+                  {[
+                    { id: 'overview', label: '👤 Patient Overview' },
+                    { id: 'current_visit', label: '🩺 Current Visit' },
+                    { id: 'medical_history', label: '📜 Medical History' },
+                    { id: 'previous_visits', label: `🏥 Previous Visits (${encounterData.previousVisits?.length || 0})` },
+                    { id: 'prescriptions', label: `💊 Prescriptions (${(encounterData.prescriptions?.currentMedicines?.length || 0) + (encounterData.prescriptions?.previousMedicines?.length || 0)})` },
+                    { id: 'tests', label: `🧪 Tests & Reports (${encounterData.testReports?.length || 0})` },
+                    { id: 'care_plan', label: `📋 Care Plan (${encounterData.carePlan?.length || 0})` },
+                    { id: 'timeline', label: `⏳ Medical Timeline (${encounterData.timeline?.length || 0})` },
+                  ].map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      id={`tab-longitudinal-${tab.id}`}
+                      onClick={() => setActiveClinicalSection(tab.id)}
+                      className={`text-xs font-bold px-3.5 py-2 rounded-xl whitespace-nowrap transition ${
+                        activeClinicalSection === tab.id
+                          ? 'bg-blue-600 text-white shadow-sm'
+                          : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                      }`}
+                    >
+                      {tab.label}
+                    </button>
+                  ))}
                 </div>
 
-                {/* LIMITED ACCESS FALLBACK SHIELD */}
-                {!encounterData.consent.isAuthorized ? (
-                  <div className="bg-amber-50/70 border-2 border-dashed border-amber-300 rounded-3xl p-8 text-center space-y-3">
-                    <div className="text-4xl">🔐</div>
-                    <h4 className="text-base font-black text-slate-800">
-                      Medical Records Shielded — Patient Consent Not Granted
-                    </h4>
-                    <p className="text-xs text-slate-600 max-w-md mx-auto">
-                      Under the MediQueue+ Patient Data Ownership architecture, patient health data is privately encrypted.
-                      To inspect past medical conditions, diagnostic test results, and care plans, the patient must grant access from their Data &amp; Privacy dashboard.
-                    </p>
-                    <p className="text-[11px] font-bold text-amber-800">
-                      You may still proceed with physical examination, prescription creation, and diagnostic ordering for this consultation.
-                    </p>
+                {/* CONSENT SHIELD WARNING (If consent not verified, shield history while allowing Current Visit & Demographics) */}
+                {!encounterData.consent.isAuthorized && !['overview', 'current_visit'].includes(activeClinicalSection) ? (
+                  <div className="bg-amber-50/80 border-2 border-dashed border-amber-300 rounded-3xl p-8 text-center space-y-4">
+                    <div className="w-16 h-16 mx-auto bg-amber-100 text-amber-900 rounded-2xl flex items-center justify-center text-3xl font-black shadow-inner">
+                      🔐
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-base font-black text-slate-900">
+                        Longitudinal Medical History Shielded — Patient Consent Not Granted
+                      </h4>
+                      <p className="text-xs text-slate-600 max-w-md mx-auto leading-relaxed">
+                        Under hospital patient privacy governance, historical diagnostic records, past prescriptions, and surgeries are securely encrypted. The patient must approve consent from their consent dashboard.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRequestConsent}
+                      className="bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs px-5 py-2.5 rounded-xl transition shadow-md"
+                    >
+                      Request Patient Consent Now
+                    </button>
                   </div>
                 ) : (
                   <div>
-                    {/* AUTHORIZED: Section Details */}
+                    {/* 1. PATIENT OVERVIEW TAB */}
                     {activeClinicalSection === 'overview' && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4 space-y-2">
-                          <span className="text-xs font-bold text-slate-700 uppercase">Recent Medical History</span>
-                          {encounterData.sharedRecords.medicalHistory.length === 0 ? (
-                            <p className="text-xs text-slate-400">No medical history on record</p>
+                      <div className="space-y-6">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                          {/* Demographics Details */}
+                          <div className="bg-slate-50 rounded-2xl border border-slate-200 p-5 space-y-3">
+                            <span className="text-xs font-black text-slate-700 uppercase tracking-wider block">
+                              Core Demographics & Identifiers
+                            </span>
+                            <div className="space-y-2 text-xs">
+                              <div className="flex justify-between py-1 border-b border-slate-200">
+                                <span className="text-slate-500">Full Name</span>
+                                <strong className="text-slate-900">{encounterData.patientOverview?.name || encounterData.patient?.name}</strong>
+                              </div>
+                              <div className="flex justify-between py-1 border-b border-slate-200">
+                                <span className="text-slate-500">Patient ABHA / ID</span>
+                                <strong className="text-slate-900 font-mono">{encounterData.patientOverview?.patientId || encounterData.patient?.id}</strong>
+                              </div>
+                              <div className="flex justify-between py-1 border-b border-slate-200">
+                                <span className="text-slate-500">Age & Gender</span>
+                                <strong className="text-slate-900 capitalize">
+                                  {encounterData.patientOverview?.age} yrs • {encounterData.patientOverview?.gender}
+                                </strong>
+                              </div>
+                              <div className="flex justify-between py-1 border-b border-slate-200">
+                                <span className="text-slate-500">Blood Group</span>
+                                <strong className="text-rose-700">{encounterData.patientOverview?.bloodGroup || 'Not Tested'}</strong>
+                              </div>
+                              <div className="flex justify-between py-1 border-b border-slate-200">
+                                <span className="text-slate-500">Phone Number</span>
+                                <strong className="text-slate-900">{encounterData.patientOverview?.phone || 'N/A'}</strong>
+                              </div>
+                              <div className="flex justify-between py-1">
+                                <span className="text-slate-500">Emergency Contact</span>
+                                <strong className="text-slate-900">{encounterData.patientOverview?.emergencyContact || 'None on file'}</strong>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Vitals & Anthropometrics */}
+                          <div className="bg-slate-50 rounded-2xl border border-slate-200 p-5 space-y-3">
+                            <span className="text-xs font-black text-slate-700 uppercase tracking-wider block">
+                              Biometrics & Body Mass Index (BMI)
+                            </span>
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="bg-white p-3 rounded-xl border border-slate-200">
+                                <span className="text-[10px] font-bold text-slate-400 block uppercase">Height</span>
+                                <span className="text-lg font-black text-slate-900">{encounterData.patientOverview?.height ? `${encounterData.patientOverview.height} cm` : '--'}</span>
+                              </div>
+                              <div className="bg-white p-3 rounded-xl border border-slate-200">
+                                <span className="text-[10px] font-bold text-slate-400 block uppercase">Weight</span>
+                                <span className="text-lg font-black text-slate-900">{encounterData.patientOverview?.weight ? `${encounterData.patientOverview.weight} kg` : '--'}</span>
+                              </div>
+                            </div>
+                            <div className="bg-white p-3.5 rounded-xl border border-slate-200 space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 block uppercase">Calculated Body Mass Index (BMI)</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-2xl font-black text-slate-900">
+                                  {encounterData.patientOverview?.bmi ?? '--'}
+                                </span>
+                                {encounterData.patientOverview?.bmiCategory && (
+                                  <span className={`text-xs font-bold px-2 py-0.5 rounded-lg ${
+                                    encounterData.patientOverview.bmiCategory === 'Normal'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-amber-100 text-amber-800'
+                                  }`}>
+                                    {encounterData.patientOverview.bmiCategory}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Longitudinal Snapshot Stats */}
+                          <div className="bg-slate-50 rounded-2xl border border-slate-200 p-5 space-y-3">
+                            <span className="text-xs font-black text-slate-700 uppercase tracking-wider block">
+                              Longitudinal Clinical Snapshot
+                            </span>
+                            <div className="grid grid-cols-2 gap-2 text-center">
+                              <div className="bg-white p-3 rounded-xl border border-slate-200">
+                                <span className="text-2xl font-black text-blue-600 block">{encounterData.previousVisits?.length || 0}</span>
+                                <span className="text-[10px] text-slate-500 font-bold uppercase">Past Visits</span>
+                              </div>
+                              <div className="bg-white p-3 rounded-xl border border-slate-200">
+                                <span className="text-2xl font-black text-purple-600 block">{encounterData.prescriptions?.currentMedicines?.length || 0}</span>
+                                <span className="text-[10px] text-slate-500 font-bold uppercase">Active Meds</span>
+                              </div>
+                              <div className="bg-white p-3 rounded-xl border border-slate-200">
+                                <span className="text-2xl font-black text-amber-600 block">{encounterData.medicalHistory?.chronicConditions?.length || 0}</span>
+                                <span className="text-[10px] text-slate-500 font-bold uppercase">Chronic Cond.</span>
+                              </div>
+                              <div className="bg-white p-3 rounded-xl border border-slate-200">
+                                <span className="text-2xl font-black text-cyan-600 block">{encounterData.testReports?.length || 0}</span>
+                                <span className="text-[10px] text-slate-500 font-bold uppercase">Diagnostic Tests</span>
+                              </div>
+                            </div>
+                            <div className="text-[11px] text-slate-500 pt-1">
+                              Consent status: <strong className="text-emerald-700 capitalize">{encounterData.consent?.status || 'Active'}</strong>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 2. CURRENT VISIT TAB */}
+                    {activeClinicalSection === 'current_visit' && (
+                      <div className="space-y-6">
+                        {/* Visit Status & Timer Header */}
+                        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                          <div className="flex flex-wrap items-center gap-3">
+                            <span className="text-xs font-bold text-slate-500 uppercase">Consultation Timer:</span>
+                            <ConsultationTimer
+                              isActive={encounterData.appointment.status === 'in-progress'}
+                              startTime={encounterData.appointment.token?.calledAt || new Date()}
+                            />
+                          </div>
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-slate-500 font-semibold">Slot:</span>
+                            <span className="bg-white px-2.5 py-1 rounded-lg border border-slate-200 font-bold text-slate-900">
+                              ⏰ {encounterData.currentVisit?.slotTime || encounterData.appointment?.slotTime}
+                            </span>
+                            <span className="text-slate-500 font-semibold">Token:</span>
+                            <span className="bg-white px-2.5 py-1 rounded-lg border border-slate-200 font-bold text-slate-900">
+                              #{encounterData.currentVisit?.tokenNumber || encounterData.appointment?.token?.tokenNumber || 'Walk-in'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Interactive Current Visit Vitals & Notes Form */}
+                        <form onSubmit={handleSaveCurrentVisit} className="space-y-5">
+                          {/* Chief Complaint, Symptoms & Duration */}
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            <div className="md:col-span-2">
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Chief Complaint *</label>
+                              <input
+                                type="text"
+                                required
+                                value={currentVisitForm.chiefComplaint}
+                                onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, chiefComplaint: e.target.value })}
+                                placeholder="e.g. Chest tightness, exertional dyspnea"
+                                className="w-full text-xs rounded-xl border border-slate-300 p-2.5 bg-white font-medium focus:ring-2 focus:ring-blue-400"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Duration</label>
+                              <input
+                                type="text"
+                                value={currentVisitForm.duration}
+                                onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, duration: e.target.value })}
+                                placeholder="e.g. 3 days, 2 weeks"
+                                className="w-full text-xs rounded-xl border border-slate-300 p-2.5 bg-white font-medium focus:ring-2 focus:ring-blue-400"
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-bold text-slate-700 mb-1">Symptoms (Comma Separated)</label>
+                            <input
+                              type="text"
+                              value={currentVisitForm.symptoms}
+                              onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, symptoms: e.target.value })}
+                              placeholder="e.g. Chest tightness, Exertional dyspnea, Fatigue"
+                              className="w-full text-xs rounded-xl border border-slate-300 p-2.5 bg-white font-medium focus:ring-2 focus:ring-blue-400"
+                            />
+                          </div>
+
+                          {/* 5 Core Clinical Vitals Grid */}
+                          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-3">
+                            <span className="text-xs font-black text-slate-700 uppercase tracking-wider block">
+                              Clinical Vitals & Physiological Measurements
+                            </span>
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 text-xs">
+                              <div>
+                                <label className="block font-bold text-slate-600 mb-1">Blood Pressure</label>
+                                <input
+                                  type="text"
+                                  value={currentVisitForm.bp}
+                                  onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, bp: e.target.value })}
+                                  placeholder="120/80 mmHg"
+                                  className="w-full rounded-xl border border-slate-300 p-2 bg-white font-semibold"
+                                />
+                              </div>
+                              <div>
+                                <label className="block font-bold text-slate-600 mb-1">Heart Rate (bpm)</label>
+                                <input
+                                  type="number"
+                                  value={currentVisitForm.heartRate}
+                                  onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, heartRate: e.target.value })}
+                                  placeholder="72"
+                                  className="w-full rounded-xl border border-slate-300 p-2 bg-white font-semibold"
+                                />
+                              </div>
+                              <div>
+                                <label className="block font-bold text-slate-600 mb-1">Temperature</label>
+                                <input
+                                  type="text"
+                                  value={currentVisitForm.temperature}
+                                  onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, temperature: e.target.value })}
+                                  placeholder="98.6 °F"
+                                  className="w-full rounded-xl border border-slate-300 p-2 bg-white font-semibold"
+                                />
+                              </div>
+                              <div>
+                                <label className="block font-bold text-slate-600 mb-1">SpO2 Oxygen (%)</label>
+                                <input
+                                  type="text"
+                                  value={currentVisitForm.spO2}
+                                  onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, spO2: e.target.value })}
+                                  placeholder="98%"
+                                  className="w-full rounded-xl border border-slate-300 p-2 bg-white font-semibold"
+                                />
+                              </div>
+                              <div>
+                                <label className="block font-bold text-slate-600 mb-1">Respiratory Rate</label>
+                                <input
+                                  type="number"
+                                  value={currentVisitForm.respiratoryRate}
+                                  onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, respiratoryRate: e.target.value })}
+                                  placeholder="16 /min"
+                                  className="w-full rounded-xl border border-slate-300 p-2 bg-white font-semibold"
+                                />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Current Observations & Physical Exam */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Current Physical Observations</label>
+                              <textarea
+                                rows={3}
+                                value={currentVisitForm.currentObservations}
+                                onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, currentObservations: e.target.value })}
+                                placeholder="e.g. Mild bilateral crackles, normal heart sounds, no peripheral edema"
+                                className="w-full text-xs rounded-xl border border-slate-300 p-2.5 bg-white font-medium focus:ring-2 focus:ring-blue-400"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Doctor Clinical Notes</label>
+                              <textarea
+                                rows={3}
+                                value={currentVisitForm.clinicalNotes}
+                                onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, clinicalNotes: e.target.value })}
+                                placeholder="e.g. Advised resting ECG, initiate cardiac workup, follow up with blood panel"
+                                className="w-full text-xs rounded-xl border border-slate-300 p-2.5 bg-white font-medium focus:ring-2 focus:ring-blue-400"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Diagnosis & Treatment Plan */}
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Working Diagnosis</label>
+                              <input
+                                type="text"
+                                value={currentVisitForm.diagnosis}
+                                onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, diagnosis: e.target.value })}
+                                placeholder="e.g. Suspected Angina Pectoris / CAD evaluation"
+                                className="w-full text-xs rounded-xl border border-slate-300 p-2.5 bg-white font-medium"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-xs font-bold text-slate-700 mb-1">Prescribed Treatment / Intervention</label>
+                              <input
+                                type="text"
+                                value={currentVisitForm.treatment}
+                                onChange={(e) => setCurrentVisitForm({ ...currentVisitForm, treatment: e.target.value })}
+                                placeholder="e.g. Sublingual nitrate standby, oral beta-blocker titration"
+                                className="w-full text-xs rounded-xl border border-slate-300 p-2.5 bg-white font-medium"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Save Visit Button */}
+                          <div className="flex justify-end gap-3 pt-2">
+                            <button
+                              type="submit"
+                              id="btn-save-current-visit"
+                              disabled={savingCurrentVisit}
+                              className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-6 py-2.5 rounded-xl shadow-md transition disabled:opacity-50 flex items-center gap-2"
+                            >
+                              <span>💾</span>
+                              {savingCurrentVisit ? 'Saving Vitals & Notes...' : 'Save Current Visit Records'}
+                            </button>
+                          </div>
+                        </form>
+                      </div>
+                    )}
+
+                    {/* 3. MEDICAL HISTORY TAB */}
+                    {activeClinicalSection === 'medical_history' && (
+                      <div className="space-y-6">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+                            Categorized Medical History & Risk Profile
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => setHistoryModalOpen(true)}
+                            className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-3.5 py-1.5 rounded-xl shadow-sm transition"
+                          >
+                            + Add Medical Record
+                          </button>
+                        </div>
+
+                        {/* Chronic Conditions */}
+                        <div className="space-y-2">
+                          <span className="text-xs font-bold text-amber-800 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200 inline-block uppercase">
+                            Chronic Conditions ({encounterData.medicalHistory?.chronicConditions?.length || 0})
+                          </span>
+                          {encounterData.medicalHistory?.chronicConditions?.length === 0 ? (
+                            <div className="text-xs text-slate-400 italic bg-slate-50 p-3 rounded-xl border border-slate-200">No chronic conditions recorded</div>
                           ) : (
-                            <div className="space-y-2">
-                              {encounterData.sharedRecords.medicalHistory.slice(0, 3).map((h) => (
-                                <div key={h._id || h.id} className="bg-white p-2.5 rounded-xl border border-slate-200 text-xs">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {encounterData.medicalHistory.chronicConditions.map((c) => (
+                                <div key={c._id} className="bg-amber-50/40 border border-amber-200 rounded-xl p-3.5 text-xs space-y-1">
                                   <div className="flex justify-between font-bold text-slate-900">
-                                    <span>{h.condition}</span>
-                                    <span className="text-[10px] text-slate-500">{h.conditionDate}</span>
+                                    <span>🩺 {c.condition}</span>
+                                    <span className="text-slate-500 font-normal">{c.conditionDate}</span>
                                   </div>
-                                  <div className="text-[10px] text-slate-500 mt-0.5">
-                                    Source: <strong className="capitalize">{h.source?.replace(/_/g, ' ')}</strong>
-                                    {h.doctorName && ` • Dr. ${h.doctorName}`}
+                                  {c.notes && <p className="text-slate-600">{c.notes}</p>}
+                                  <div className="text-[10px] text-slate-400">
+                                    Source: <span className="capitalize">{c.source?.replace(/_/g, ' ')}</span>
+                                    {c.doctorName && ` • Dr. ${c.doctorName}`}
                                   </div>
                                 </div>
                               ))}
@@ -995,20 +1370,50 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                           )}
                         </div>
 
-                        <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4 space-y-2">
-                          <span className="text-xs font-bold text-slate-700 uppercase">Diagnostic Test Orders</span>
-                          {encounterData.sharedRecords.testResults.length === 0 ? (
-                            <p className="text-xs text-slate-400">No diagnostic tests on record</p>
+                        {/* Previous Illnesses & Diagnoses */}
+                        <div className="space-y-2">
+                          <span className="text-xs font-bold text-blue-800 bg-blue-50 px-2.5 py-1 rounded-lg border border-blue-200 inline-block uppercase">
+                            Previous Illnesses & Diagnoses ({encounterData.medicalHistory?.previousIllnesses?.length || 0})
+                          </span>
+                          {encounterData.medicalHistory?.previousIllnesses?.length === 0 ? (
+                            <div className="text-xs text-slate-400 italic bg-slate-50 p-3 rounded-xl border border-slate-200">No previous illnesses recorded</div>
                           ) : (
-                            <div className="space-y-2">
-                              {encounterData.sharedRecords.testResults.slice(0, 3).map((t) => (
-                                <div key={t._id || t.id} className="bg-white p-2.5 rounded-xl border border-slate-200 text-xs">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {encounterData.medicalHistory.previousIllnesses.map((ill) => (
+                                <div key={ill._id} className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 text-xs space-y-1">
                                   <div className="flex justify-between font-bold text-slate-900">
-                                    <span>{t.testName}</span>
-                                    <span className="text-purple-600 font-bold">{t.result}</span>
+                                    <span>🌡️ {ill.condition}</span>
+                                    <span className="text-slate-500 font-normal">{ill.conditionDate}</span>
                                   </div>
-                                  <div className="text-[10px] text-slate-500 mt-0.5">
-                                    Status: <strong className="capitalize">{t.status}</strong> • Lab: {t.labName || 'Clinical Diagnostics'}
+                                  {ill.notes && <p className="text-slate-600">{ill.notes}</p>}
+                                  <div className="text-[10px] text-slate-400">
+                                    Source: <span className="capitalize">{ill.source?.replace(/_/g, ' ')}</span>
+                                    {ill.doctorName && ` • Dr. ${ill.doctorName}`}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Previous Surgeries */}
+                        <div className="space-y-2">
+                          <span className="text-xs font-bold text-purple-800 bg-purple-50 px-2.5 py-1 rounded-lg border border-purple-200 inline-block uppercase">
+                            Previous Surgeries & Procedures ({encounterData.medicalHistory?.previousSurgeries?.length || 0})
+                          </span>
+                          {encounterData.medicalHistory?.previousSurgeries?.length === 0 ? (
+                            <div className="text-xs text-slate-400 italic bg-slate-50 p-3 rounded-xl border border-slate-200">No surgical history recorded</div>
+                          ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {encounterData.medicalHistory.previousSurgeries.map((s) => (
+                                <div key={s._id} className="bg-purple-50/40 border border-purple-200 rounded-xl p-3.5 text-xs space-y-1">
+                                  <div className="flex justify-between font-bold text-slate-900">
+                                    <span>🔪 {s.condition}</span>
+                                    <span className="text-slate-500 font-normal">{s.conditionDate}</span>
+                                  </div>
+                                  {s.notes && <p className="text-slate-600">{s.notes}</p>}
+                                  <div className="text-[10px] text-slate-400">
+                                    Recorded: <span className="capitalize">{s.source?.replace(/_/g, ' ')}</span>
                                   </div>
                                 </div>
                               ))}
@@ -1018,57 +1423,306 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                       </div>
                     )}
 
-                    {activeClinicalSection === 'history' && (
-                      <HistoryTimeline
-                        entries={encounterData.sharedRecords.medicalHistory}
-                        isPatientView={false}
-                        consentVerified={true}
-                        loading={false}
-                      />
-                    )}
+                    {/* 4. PREVIOUS VISITS TAB */}
+                    {activeClinicalSection === 'previous_visits' && (
+                      <div className="space-y-4">
+                        <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+                          Historical Outpatient & Inpatient Consultations
+                        </h3>
 
-                    {activeClinicalSection === 'tests' && (
-                      <TestRecordsTimeline
-                        orders={encounterData.sharedRecords.testResults}
-                        isPatientView={false}
-                        doctorTokenId={doctorId}
-                      />
-                    )}
-
-                    {activeClinicalSection === 'prescriptions' && (
-                      <div className="space-y-3">
-                        {encounterData.sharedRecords.prescriptions.length === 0 ? (
-                          <div className="text-center py-8 text-slate-400 text-xs">No prescriptions on record</div>
+                        {encounterData.previousVisits?.length === 0 ? (
+                          <div className="text-center py-12 text-slate-400 text-xs font-medium border-2 border-dashed border-slate-200 rounded-2xl">
+                            No previous visits on record. This is the patient's first registered consultation.
+                          </div>
                         ) : (
-                          encounterData.sharedRecords.prescriptions.map((rx) => (
-                            <div key={rx._id || rx.id} className="bg-slate-50 rounded-2xl border border-slate-200 p-4 space-y-2">
-                              <div className="flex justify-between text-xs font-bold text-slate-800">
-                                <span>Diagnosis: {rx.diagnosis || 'Clinical Prescription'}</span>
-                                <span className="text-slate-500">{new Date(rx.startDate || rx.createdAt).toISOString().slice(0, 10)}</span>
-                              </div>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                                {(rx.medications || []).map((m, idx) => (
-                                  <div key={idx} className="bg-white p-3 rounded-xl border border-slate-200 text-xs space-y-1">
-                                    <div className="font-black text-slate-900">{m.medicineName} ({m.dosage})</div>
-                                    <div className="text-slate-500">{m.frequency} • {m.mealRelation?.replace(/_/g, ' ')} • {m.durationDays} days</div>
-                                    {m.instructions && <div className="text-slate-400 text-[11px] italic">{m.instructions}</div>}
+                          <div className="space-y-3">
+                            {encounterData.previousVisits.map((v) => (
+                              <div key={v.appointmentId} className="bg-slate-50 rounded-2xl border border-slate-200 p-4 text-xs space-y-2">
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="bg-white px-2.5 py-1 rounded-lg border border-slate-200 font-bold text-slate-900">
+                                      📅 {v.date}
+                                    </span>
+                                    <strong className="text-slate-900 text-sm">{v.doctor}</strong>
+                                    <span className="text-slate-500 font-medium">({v.specialty})</span>
                                   </div>
-                                ))}
+                                  <span className="text-slate-500 font-bold bg-white px-2 py-0.5 rounded-md border border-slate-200">
+                                    🏥 {v.hospitalName}
+                                  </span>
+                                </div>
+
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+                                  <div>
+                                    <span className="text-slate-400 font-bold uppercase block text-[10px]">Reason for Visit</span>
+                                    <p className="font-semibold text-slate-800 mt-0.5">{v.reasonForVisit}</p>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 font-bold uppercase block text-[10px]">Diagnosis</span>
+                                    <p className="font-semibold text-slate-800 mt-0.5">{v.diagnosis}</p>
+                                  </div>
+                                  <div>
+                                    <span className="text-slate-400 font-bold uppercase block text-[10px]">Treatment & Prescriptions</span>
+                                    <p className="font-semibold text-purple-700 mt-0.5">{v.treatment || v.prescriptionsSummary}</p>
+                                  </div>
+                                </div>
                               </div>
-                            </div>
-                          ))
+                            ))}
+                          </div>
                         )}
                       </div>
                     )}
 
-                    {activeClinicalSection === 'care_plans' && (
+                    {/* 5. PRESCRIPTIONS TAB (Current vs Previous Medicines) */}
+                    {activeClinicalSection === 'prescriptions' && (
+                      <div className="space-y-6">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+                            Longitudinal Medication Profile & Prescriptions
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => setRxModalOpen(true)}
+                            className="bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs px-3.5 py-1.5 rounded-xl shadow-sm transition"
+                          >
+                            + Issue Prescription
+                          </button>
+                        </div>
+
+                        {/* Current Active Medicines */}
+                        <div className="space-y-3">
+                          <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-3 py-1 rounded-lg border border-emerald-200 inline-block uppercase">
+                            🟢 Current Active Medicines ({encounterData.prescriptions?.currentMedicines?.length || 0})
+                          </span>
+
+                          {encounterData.prescriptions?.currentMedicines?.length === 0 ? (
+                            <div className="text-xs text-slate-400 italic bg-slate-50 p-4 rounded-xl border border-slate-200">
+                              No active medications on record.
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {encounterData.prescriptions.currentMedicines.map((med, idx) => (
+                                <div key={idx} className="bg-emerald-50/30 border border-emerald-200 rounded-2xl p-4 text-xs space-y-1.5 shadow-sm">
+                                  <div className="flex justify-between items-center">
+                                    <h4 className="font-black text-slate-900 text-sm">{med.medicineName}</h4>
+                                    <span className="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full text-[10px] uppercase">
+                                      Active
+                                    </span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2 text-slate-600">
+                                    <div><strong>Dosage:</strong> {med.dosage}</div>
+                                    <div><strong>Frequency:</strong> {med.frequency}</div>
+                                    <div><strong>Duration:</strong> {med.duration}</div>
+                                    <div><strong>Meal:</strong> <span className="capitalize">{med.mealRelation?.replace(/_/g, ' ')}</span></div>
+                                  </div>
+                                  {med.instructions && (
+                                    <p className="text-[11px] text-slate-500 italic bg-white p-2 rounded-lg border border-emerald-100 mt-1">
+                                      Instructions: {med.instructions}
+                                    </p>
+                                  )}
+                                  <div className="text-[10px] text-slate-400 pt-1">
+                                    Prescribed by: {med.doctorName || 'Attending Physician'}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Previous / Completed Medicines */}
+                        <div className="space-y-3">
+                          <span className="text-xs font-bold text-slate-700 bg-slate-100 px-3 py-1 rounded-lg border border-slate-200 inline-block uppercase">
+                            ⚪ Past / Completed Courses ({encounterData.prescriptions?.previousMedicines?.length || 0})
+                          </span>
+
+                          {encounterData.prescriptions?.previousMedicines?.length === 0 ? (
+                            <div className="text-xs text-slate-400 italic bg-slate-50 p-4 rounded-xl border border-slate-200">
+                              No previous completed courses recorded.
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              {encounterData.prescriptions.previousMedicines.map((med, idx) => (
+                                <div key={idx} className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs space-y-1.5 opacity-80">
+                                  <div className="flex justify-between items-center">
+                                    <h4 className="font-bold text-slate-800 text-sm">{med.medicineName}</h4>
+                                    <span className="bg-slate-200 text-slate-700 font-bold px-2 py-0.5 rounded-full text-[10px] uppercase">
+                                      Completed
+                                    </span>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2 text-slate-500">
+                                    <div><strong>Dosage:</strong> {med.dosage}</div>
+                                    <div><strong>Duration:</strong> {med.duration}</div>
+                                  </div>
+                                  {med.instructions && <p className="text-[11px] text-slate-400 italic">{med.instructions}</p>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 6. TESTS & REPORTS TAB */}
+                    {activeClinicalSection === 'tests' && (
                       <div className="space-y-4">
-                        {encounterData.sharedRecords.carePlans.length === 0 ? (
-                          <div className="text-center py-8 text-slate-400 text-xs">No active care plans on record</div>
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+                            Diagnostic Test Orders & Lab Reports
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => setTestModalOpen(true)}
+                            className="bg-cyan-600 hover:bg-cyan-700 text-white font-bold text-xs px-3.5 py-1.5 rounded-xl shadow-sm transition"
+                          >
+                            + Order Diagnostic Test
+                          </button>
+                        </div>
+
+                        {encounterData.testReports?.length === 0 ? (
+                          <div className="text-center py-12 text-slate-400 text-xs font-medium border-2 border-dashed border-slate-200 rounded-2xl">
+                            No diagnostic lab orders on record.
+                          </div>
                         ) : (
-                          encounterData.sharedRecords.carePlans.map((plan) => (
-                            <CarePlanCard key={plan._id || plan.id} plan={plan} isPatientView={false} />
-                          ))
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            {encounterData.testReports.map((t) => (
+                              <div key={t.id || t._id} className="bg-slate-50 rounded-2xl border border-slate-200 p-4 text-xs space-y-2">
+                                <div className="flex justify-between items-start gap-2">
+                                  <div>
+                                    <h4 className="font-black text-slate-900 text-sm">{t.testName}</h4>
+                                    <p className="text-[11px] text-slate-500 mt-0.5">Reason: {t.reason}</p>
+                                  </div>
+                                  <span className={`px-2.5 py-0.5 rounded-full font-bold uppercase text-[10px] ${
+                                    t.status === 'completed'
+                                      ? 'bg-emerald-100 text-emerald-800'
+                                      : 'bg-amber-100 text-amber-800'
+                                  }`}>
+                                    {t.status}
+                                  </span>
+                                </div>
+
+                                <div className="bg-white p-3 rounded-xl border border-slate-200 space-y-1">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase">Reported Result</span>
+                                  <p className="text-sm font-black text-slate-900">{t.result || 'Pending Lab Verification'}</p>
+                                </div>
+
+                                <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] text-slate-400 pt-1">
+                                  <span>Ordered by: <strong>{t.orderedBy}</strong></span>
+                                  <span>Lab: <strong>{t.labName || 'Apex Diagnostic Services'}</strong></span>
+                                  {t.hasReport && (
+                                    <span className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded font-bold border border-blue-200">
+                                      📄 PDF Attached
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 7. CARE PLAN TAB */}
+                    {activeClinicalSection === 'care_plan' && (
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+                            Longitudinal Care & Recovery Plans
+                          </h3>
+                          <button
+                            type="button"
+                            onClick={() => setCarePlanModalOpen(true)}
+                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs px-3.5 py-1.5 rounded-xl shadow-sm transition"
+                          >
+                            + Establish Care Plan
+                          </button>
+                        </div>
+
+                        {encounterData.carePlan?.length === 0 ? (
+                          <div className="text-center py-12 text-slate-400 text-xs font-medium border-2 border-dashed border-slate-200 rounded-2xl">
+                            No active care plans on record.
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            {encounterData.carePlan.map((cp) => (
+                              <div key={cp._id || cp.id} className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4 text-xs">
+                                <div className="flex justify-between items-center border-b border-slate-200 pb-2">
+                                  <div>
+                                    <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200 uppercase">
+                                      Clinical Care Plan
+                                    </span>
+                                    <h4 className="text-base font-black text-slate-900 mt-1">{cp.diagnosis}</h4>
+                                  </div>
+                                  <div className="text-right">
+                                    <span className="text-slate-400 block text-[10px]">Follow-Up Date</span>
+                                    <strong className="text-indigo-700 text-xs font-bold">{cp.followUpDate || 'In 2 weeks'}</strong>
+                                  </div>
+                                </div>
+
+                                {cp.treatmentPlan && (
+                                  <div className="bg-white p-3 rounded-xl border border-slate-200">
+                                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Treatment Strategy</span>
+                                    <p className="font-semibold text-slate-800 mt-0.5">{cp.treatmentPlan}</p>
+                                  </div>
+                                )}
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                  <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-3.5 space-y-1">
+                                    <strong className="text-emerald-900 font-bold block uppercase text-[11px]">✓ Recommended Diet & Lifestyle</strong>
+                                    <p className="text-slate-700">
+                                      {Array.isArray(cp.dietRecommended) ? cp.dietRecommended.join(', ') : cp.dietRecommended || 'Balanced nutrition'}
+                                    </p>
+                                  </div>
+                                  <div className="bg-rose-50/50 border border-rose-200 rounded-xl p-3.5 space-y-1">
+                                    <strong className="text-rose-900 font-bold block uppercase text-[11px]">✕ Dietary & Activity Restrictions</strong>
+                                    <p className="text-slate-700">
+                                      {Array.isArray(cp.dietRestricted) ? cp.dietRestricted.join(', ') : cp.dietRestricted || 'Avoid high sodium/trans-fats'}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                {cp.instructions && (
+                                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-amber-900 font-medium text-[11px]">
+                                    <strong>Physician Instructions & Red Flags:</strong> {cp.instructions}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 8. TIMELINE TAB (Chronological Patient Medical Timeline) */}
+                    {activeClinicalSection === 'timeline' && (
+                      <div className="space-y-4">
+                        <h3 className="text-sm font-black text-slate-900 uppercase tracking-wider">
+                          Chronological Patient Medical Timeline
+                        </h3>
+
+                        {encounterData.timeline?.length === 0 ? (
+                          <div className="text-center py-12 text-slate-400 text-xs font-medium border-2 border-dashed border-slate-200 rounded-2xl">
+                            No timeline entries recorded yet.
+                          </div>
+                        ) : (
+                          <div className="relative pl-6 space-y-6 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-slate-200">
+                            {encounterData.timeline.map((event) => (
+                              <div key={event.id} className="relative space-y-1 text-xs">
+                                <div className="absolute -left-[23px] top-1.5 w-3.5 h-3.5 rounded-full bg-blue-600 ring-4 ring-white" />
+                                <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 space-y-1 hover:bg-slate-100/60 transition">
+                                  <div className="flex flex-wrap items-center justify-between gap-2">
+                                    <span className="bg-white px-2.5 py-0.5 rounded-md border border-slate-200 font-bold text-slate-900 text-[11px]">
+                                      📅 {event.date || 'Past Event'}
+                                    </span>
+                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase bg-blue-100 text-blue-800">
+                                      {event.badge || event.type}
+                                    </span>
+                                  </div>
+                                  <h4 className="font-bold text-slate-900 text-sm mt-1">{event.title}</h4>
+                                  <p className="text-slate-600 font-medium">{event.subtitle}</p>
+                                  {event.details && <p className="text-slate-500 text-[11px] mt-1">{event.details}</p>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
                         )}
                       </div>
                     )}
@@ -1083,7 +1737,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-lg font-black text-slate-900">Today's Appointment Schedule</h3>
-                <p className="text-xs text-slate-500">Live synchronization with hospital reception & token engine</p>
+                <p className="text-xs text-slate-500">Live operational synchronization with hospital reception & queue engine</p>
               </div>
 
               {/* Schedule Filter Tabs */}
@@ -1181,7 +1835,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                         onClick={() => fetchPatientEncounter(apt._id)}
                         className="bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition shadow-sm"
                       >
-                        🩺 Open Patient Dossier
+                        🩺 Open Longitudinal Record
                       </button>
 
                       {apt.status === 'booked' && (
@@ -1221,10 +1875,9 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
         </div>
       )}
 
-      {/* WORKSPACE VIEW: OPD QUEUE ENGINE (Enhanced Existing Doctor Panel) */}
+      {/* WORKSPACE VIEW: OPD QUEUE ENGINE (Enhanced Doctor Panel) */}
       {activeWorkspaceTab === 'queue' && (
         <div className="space-y-6">
-          {/* Clinical Decision Support (CDS) Advisory Banner */}
           <div className="bg-indigo-50 border border-indigo-200 rounded-3xl p-5 text-xs text-indigo-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
             <div className="flex items-center gap-3">
               <span className="text-2xl">🛡️</span>
@@ -1332,7 +1985,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                   required
                   value={rxDiagnosis}
                   onChange={(e) => setRxDiagnosis(e.target.value)}
-                  placeholder="e.g. Essential Hypertension, Acute Bronchitis"
+                  placeholder="e.g. Essential Hypertension, Angina Prophylaxis"
                   className="w-full text-xs rounded-xl border border-slate-300 p-2.5 focus:ring-2 focus:ring-purple-400"
                 />
               </div>
@@ -1424,7 +2077,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                             const val = e.target.value;
                             setRxMedications((prev) => prev.map((m, idx) => (idx === i ? { ...m, frequency: val } : m)));
                           }}
-                          placeholder="e.g. Twice daily"
+                          placeholder="e.g. Once daily morning"
                           className="w-full rounded-lg border border-slate-300 p-1.5 text-xs bg-white"
                         />
                       </div>
@@ -1454,7 +2107,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                   rows={2}
                   value={rxInstructions}
                   onChange={(e) => setRxInstructions(e.target.value)}
-                  placeholder="e.g. Take with full glass of water. Report any swelling or dizziness."
+                  placeholder="e.g. Take with water. Keep sublingual nitrate handy for emergencies."
                   className="w-full text-xs rounded-xl border border-slate-300 p-2.5 focus:ring-2 focus:ring-purple-400"
                 />
               </div>
@@ -1504,14 +2157,14 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
 
             <form onSubmit={handleOrderTestSubmit} className="space-y-3">
               <div>
-                <label className="block text-xs font-bold text-slate-600 mb-1.5">Common Tests Quick Select</label>
+                <label className="block text-xs font-bold text-slate-600 mb-1.5">Quick Presets</label>
                 <div className="flex flex-wrap gap-1.5">
                   {[
+                    '12-Lead Resting Electrocardiogram (ECG)',
+                    'Serum Troponin I (High Sensitivity)',
                     'Complete Blood Count (CBC)',
                     'Comprehensive Lipid Profile',
                     'Fasting Blood Sugar & HbA1c',
-                    'Kidney Panel (KFT)',
-                    'Liver Panel (LFT)',
                   ].map((preset) => (
                     <button
                       key={preset}
@@ -1536,7 +2189,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                   required
                   value={testOrderForm.testName}
                   onChange={(e) => setTestOrderForm({ ...testOrderForm, testName: e.target.value })}
-                  placeholder="e.g. Complete Blood Count (CBC)"
+                  placeholder="e.g. 12-Lead Electrocardiogram"
                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:ring-2 focus:ring-cyan-400"
                 />
               </div>
@@ -1548,7 +2201,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                   required
                   value={testOrderForm.reason}
                   onChange={(e) => setTestOrderForm({ ...testOrderForm, reason: e.target.value })}
-                  placeholder="e.g. Evaluate dyspnea, check hemoglobin and platelet count"
+                  placeholder="e.g. Rule out myocardial ischemia, evaluate ST-T changes"
                   className="w-full rounded-xl border border-slate-300 px-3 py-2 text-xs focus:ring-2 focus:ring-cyan-400"
                 />
               </div>
@@ -1581,10 +2234,10 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
-                  <span>📋</span> Issue Doctor Care Plan
+                  <span>📋</span> Establish Doctor Care Plan
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Patient: <strong>{encounterData?.patient.name}</strong> • Structured Guidance
+                  Patient: <strong>{encounterData?.patient.name}</strong> • Structured Longitudinal Guidance
                 </p>
               </div>
               <button
@@ -1598,13 +2251,13 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
 
             <form onSubmit={handleCarePlanSubmit} className="space-y-3 text-xs">
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Diagnosis / Clinical Context *</label>
+                <label className="block font-bold text-slate-700 mb-1">Diagnosis / Clinical Focus *</label>
                 <input
                   type="text"
                   required
                   value={carePlanForm.diagnosis}
                   onChange={(e) => setCarePlanForm({ ...carePlanForm, diagnosis: e.target.value })}
-                  placeholder="e.g. Essential Hypertension"
+                  placeholder="e.g. Cardiovascular Risk Management"
                   className="w-full rounded-xl border border-slate-300 p-2 focus:ring-2 focus:ring-indigo-400"
                 />
               </div>
@@ -1620,7 +2273,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                     rows={2}
                     value={carePlanForm.dietRecommended}
                     onChange={(e) => setCarePlanForm({ ...carePlanForm, dietRecommended: e.target.value })}
-                    placeholder="e.g. DASH diet, leafy greens, 2.5L daily hydration"
+                    placeholder="e.g. DASH low-sodium diet, high soluble fiber, hydration"
                     className="w-full rounded-xl border border-slate-300 p-2 bg-white"
                   />
                 </div>
@@ -1630,7 +2283,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                     rows={2}
                     value={carePlanForm.activitiesRecommended}
                     onChange={(e) => setCarePlanForm({ ...carePlanForm, activitiesRecommended: e.target.value })}
-                    placeholder="e.g. 30 minutes brisk walking 5 days/week"
+                    placeholder="e.g. 30 minutes brisk walking 5 days/week as tolerated"
                     className="w-full rounded-xl border border-slate-300 p-2 bg-white"
                   />
                 </div>
@@ -1657,7 +2310,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                     rows={2}
                     value={carePlanForm.activitiesRestricted}
                     onChange={(e) => setCarePlanForm({ ...carePlanForm, activitiesRestricted: e.target.value })}
-                    placeholder="e.g. Heavy lifting, high-strain cardiovascular overload"
+                    placeholder="e.g. Heavy weightlifting, high-intensity exertion pending stress test"
                     className="w-full rounded-xl border border-slate-300 p-2 bg-white"
                   />
                 </div>
@@ -1669,6 +2322,17 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                   type="date"
                   value={carePlanForm.followUpDate}
                   onChange={(e) => setCarePlanForm({ ...carePlanForm, followUpDate: e.target.value })}
+                  className="w-full rounded-xl border border-slate-300 p-2"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Physician Warning Signs / Emergency Triggers</label>
+                <textarea
+                  rows={2}
+                  value={carePlanForm.notes}
+                  onChange={(e) => setCarePlanForm({ ...carePlanForm, notes: e.target.value })}
+                  placeholder="e.g. Seek emergency attention if chest pain lasts >15 mins or radiates to arm."
                   className="w-full rounded-xl border border-slate-300 p-2"
                 />
               </div>
@@ -1686,7 +2350,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                   disabled={submittingCarePlan}
                   className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-5 py-2 rounded-xl transition disabled:opacity-50"
                 >
-                  {submittingCarePlan ? 'Issuing...' : 'Issue Care Plan'}
+                  {submittingCarePlan ? 'Establishing...' : 'Establish Care Plan'}
                 </button>
               </div>
             </form>
@@ -1701,10 +2365,10 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div>
                 <h3 className="text-base font-black text-slate-900 flex items-center gap-2">
-                  <span>🩺</span> Record Doctor-Verified Condition
+                  <span>🩺</span> Record Medical History
                 </h3>
                 <p className="text-xs text-slate-500">
-                  Patient: <strong>{encounterData?.patient.name}</strong> • Immutable Clinical Attribution
+                  Patient: <strong>{encounterData?.patient.name}</strong> • Categorized Clinical Record
                 </p>
               </div>
               <button
@@ -1718,13 +2382,28 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
 
             <form onSubmit={handleVerifiedHistorySubmit} className="space-y-3 text-xs">
               <div>
-                <label className="block font-bold text-slate-700 mb-1">Diagnosed Condition *</label>
+                <label className="block font-bold text-slate-700 mb-1">Record Category *</label>
+                <select
+                  value={historyForm.category}
+                  onChange={(e) => setHistoryForm({ ...historyForm, category: e.target.value })}
+                  className="w-full rounded-xl border border-slate-300 p-2 bg-white"
+                >
+                  <option value="chronic_condition">Chronic Condition (e.g. Hypertension, Diabetes)</option>
+                  <option value="illness">Previous Illness (e.g. Bronchitis, Infection)</option>
+                  <option value="surgery">Previous Surgery (e.g. Appendectomy)</option>
+                  <option value="diagnosis">Clinical Diagnosis</option>
+                  <option value="allergy">Allergy / Drug Sensitivity</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">Diagnosed Condition / Procedure *</label>
                 <input
                   type="text"
                   required
                   value={historyForm.condition}
                   onChange={(e) => setHistoryForm({ ...historyForm, condition: e.target.value })}
-                  placeholder="e.g. Coronary Artery Disease"
+                  placeholder="e.g. Essential Hypertension"
                   className="w-full rounded-xl border border-slate-300 p-2 focus:ring-2 focus:ring-blue-400"
                 />
               </div>
@@ -1745,7 +2424,7 @@ export default function DoctorClinicalWorkspace({ initialDoctorId = DEFAULT_DOCT
                   rows={3}
                   value={historyForm.notes}
                   onChange={(e) => setHistoryForm({ ...historyForm, notes: e.target.value })}
-                  placeholder="Document clinical exam findings and treatment considerations."
+                  placeholder="Document clinical exam findings, severity, and treatment."
                   className="w-full rounded-xl border border-slate-300 p-2"
                 />
               </div>
